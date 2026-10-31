@@ -1,0 +1,52 @@
+# ===== .NET / C# 构建产物 =====
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+# ===== Visual Studio =====
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# ===== Rider / VS Code 本地配置 =====
+.idea/
+*.iml
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ===== NuGet =====
+*.nupkg
+**/packages/*
+!**/packages/build/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+
+# ===== 发布产物 =====
+publish/
+artifacts/
+*.appx
+*.appxbundle
+*.msix
+*.msixupload
+AppPackages/
+
+# ===== 项目工具目录（勿动） =====
+.v2c/
+
+# ===== ZCode 本地会话状态 =====
+.zcode/
+
+# ===== 系统杂项 =====
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
