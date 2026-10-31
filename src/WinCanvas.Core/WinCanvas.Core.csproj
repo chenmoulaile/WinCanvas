@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 面向 Windows 10 19041+ 的 .NET 8 类库，供 WinUI 3 应用引用 -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>WinCanvas.Core</RootNamespace>
+    <!-- 关闭对旧式 P/Invoke 分析器的强制告警，Native/NativeMethods 中已按规范手写注释 -->
+    <NoWarn>$(NoWarn);CA1401;CA5392</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- MVVM 工具库：本轮骨架阶段模型为 POCO，后续 UI 绑定阶段直接可用 -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+  </ItemGroup>
+
+</Project>

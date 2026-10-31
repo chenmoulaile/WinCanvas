@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- WinUI 3 目标框架：Windows 10 19041+ -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>WinCanvas.App</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <!-- WinUI 3 -->
+    <UseWinUI>true</UseWinUI>
+
+    <!-- unpackaged（非打包）部署：不依赖 MSIX -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <!-- 自带 WinAppSDK 运行时，目标机器无需安装 Windows App Runtime -->
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+
+    <!-- WinUI 3 不支持 AnyCPU 产物，骨架阶段固定 x64 -->
+    <Platforms>x64</Platforms>
+    <Platform>x64</Platform>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Microsoft.WindowsAppSDK 1.x 稳定线最新版（2.x 为新大版本，未在本环境对 .NET 8 验证）。
+         Microsoft.Windows.SDK.BuildTools 由其传递依赖自动带入（本环境解析为 10.0.26100.4654） -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
+    <!-- MVVM 工具库：后续 ViewModel 阶段使用 -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WinCanvas.Core\WinCanvas.Core.csproj" />
+  </ItemGroup>
+
+</Project>
