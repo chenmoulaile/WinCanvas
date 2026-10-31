@@ -25,4 +25,11 @@ public interface IConfigurationService
     /// </summary>
     /// <param name="cancellationToken">取消令牌。</param>
     Task FlushAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 立即【同步】将内存缓存写盘。
+    /// 供窗口关闭等退出路径使用：消息循环即将退出，异步续延（含 await 之后的代码）
+    /// 可能没有机会执行，必须同步写完磁盘再返回才能保证最后一次防抖窗口内的修改不丢。
+    /// </summary>
+    void Flush();
 }

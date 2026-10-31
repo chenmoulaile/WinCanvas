@@ -78,25 +78,25 @@ public partial class WindowItemViewModel : ObservableObject
     /// <summary>
     /// 选中该窗口时恢复其已保存的属性档案：
     /// 把持久化的置顶 / 透明 / 穿透 / 圆角值实际应用回窗口，
-    /// 保证界面开关、档案值与窗口真实状态三者一致（否则置顶开关与 ToggleTopmostAsync
-    /// 的「翻转」语义会对不上）。
+    /// 保证界面开关、档案值与窗口真实状态三者一致。
+    /// 置顶采用「先读真实状态、仅在不一致时按目标值设置」的幂等语义 ——
+    /// 不能用翻转语义，否则窗口实际已置顶（本次会话设置过 / 刷新后重新选中）时，
+    /// 恢复动作反而会把置顶翻掉并把错误状态写盘。
     /// </summary>
     public async Task RestoreAsync()
     {
         try
         {
-            // 置顶：接口只有 Toggle 语义，档案为置顶时翻一次使其进入置顶态
-            if (State.IsTopmost)
+            // 置顶：读窗口实际状态，仅在与档案不一致时应用目标值，最后以实际状态为准回写
+            var actualTopmost = await _windowControl.GetIsTopmostAsync(Hwnd);
+            if (actualTopmost != State.IsTopmost)
             {
-                var actual = await _windowControl.ToggleTopmostAsync(Hwnd);
-                _appliedTopmost = actual;
-                State.IsTopmost = actual;
-                IsTopmost = actual;
+                await _windowControl.SetTopmostAsync(Hwnd, State.IsTopmost);
+                actualTopmost = await _windowControl.GetIsTopmostAsync(Hwnd);
             }
-            else
-            {
-                _appliedTopmost = false;
-            }
+            _appliedTopmost = actualTopmost;
+            State.IsTopmost = actualTopmost;
+            IsTopmost = actualTopmost;
 
             // 透明度：档案不是默认不透明时应用
             if (State.Alpha != 255)
@@ -133,12 +133,13 @@ public partial class WindowItemViewModel : ObservableObject
         }
     }
 
-    /// <summary>切换置顶（接口为 Toggle 语义：翻转后以服务返回的实际状态为准）。</summary>
+    /// <summary>设置置顶状态（幂等语义：按目标值直接设置，以服务读回的实际状态为准）。</summary>
     public async Task SetTopmostAsync(bool desired)
     {
         try
         {
-            var actual = await _windowControl.ToggleTopmostAsync(Hwnd);
+            await _windowControl.SetTopmostAsync(Hwnd, desired);
+            var actual = await _windowControl.GetIsTopmostAsync(Hwnd);
             _appliedTopmost = actual;
             IsTopmost = actual;
             State.IsTopmost = actual;

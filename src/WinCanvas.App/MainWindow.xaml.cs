@@ -16,6 +16,9 @@ public sealed partial class MainWindow : Window
     /// <summary>主 ViewModel（XAML 通过 x:Bind 绑定）。</summary>
     public MainViewModel ViewModel { get; }
 
+    /// <summary>壁纸画面预览控制器（持有引用防 GC；事件订阅使其实际常驻）。</summary>
+    private readonly WallpaperPreviewController _wallpaperPreview;
+
     public MainWindow(AppServices services)
     {
         InitializeComponent();
@@ -35,8 +38,18 @@ public sealed partial class MainWindow : Window
             () => FilePickerService.PickWallpaperFileAsync(hwnd),
             () => hwnd);
 
-        // 退出前确保配置落盘（防抖写盘可能还有未刷的数据）
-        Closed += async (_, _) => await services.Configuration.FlushAsync();
+        // 壁纸画面上屏（装配职责）：订阅 WallpaperService.ImageFrameReady（转 WriteableBitmap
+        // 显示到预览 Image）与 VideoPlayerReady（挂 MediaPlayerElement 输出）
+        _wallpaperPreview = new WallpaperPreviewController(
+            WallpaperPreviewImage,
+            WallpaperPreviewPlayer,
+            services.Wallpaper,
+            global::Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
+
+        // 退出前确保配置落盘：窗口关闭后消息循环即将退出，FlushAsync 的异步续延
+        // （含 await File.WriteAllTextAsync 之后的 File.Move）可能没有机会执行，
+        // 必须用同步 Flush() 写完磁盘再返回，防抖窗口内（最后 500ms）的修改才不会丢。
+        Closed += (_, _) => services.Configuration.Flush();
 
         // 启动初始化：加载配置 + 首次枚举窗口（异步，不阻塞界面显示）
         _ = ViewModel.InitializeAsync();

@@ -2,12 +2,12 @@ namespace WinCanvas.Core.Models;
 
 /// <summary>
 /// 单个被管理窗口的持久化状态。
-/// 窗口的唯一标识 = 「进程名 + 标题」的组合键（<see cref="Key"/>），
+/// 窗口的唯一标识 = 「进程名 + 类名」的组合键（<see cref="Key"/>，成员转义防碰撞），
 /// 辅以 hwnd 句柄值的哈希（<see cref="HwndHash"/>）用于运行期快速定位。
 /// </summary>
 public sealed class WindowState
 {
-    /// <summary>窗口唯一组合键："进程名|标题"（见 <see cref="WindowInfo.Key"/>）。</summary>
+    /// <summary>窗口唯一组合键："进程名|类名"（成员转义后拼接，见 <see cref="WindowInfo.Key"/>）。</summary>
     public string Key { get; set; } = string.Empty;
 
     /// <summary>

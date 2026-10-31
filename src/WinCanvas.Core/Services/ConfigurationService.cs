@@ -152,6 +152,39 @@ public sealed class ConfigurationService : IConfigurationService, IDisposable
         }
     }
 
+    /// <inheritdoc/>
+    public void Flush()
+    {
+        ThrowIfDisposed();
+
+        AppConfig? snapshot;
+        lock (_syncLock)
+        {
+            // 取消尚未执行的延迟写盘，立即落盘（应用退出路径的同步版本）。
+            _pendingSaveCts?.Cancel();
+            _pendingSaveCts?.Dispose();
+            _pendingSaveCts = null;
+            snapshot = _cached;
+        }
+
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        // 同步等待 IO 闸门并同步写盘：调用方（窗口关闭回调）所在的消息循环可能
+        // 即将退出，本方法返回前必须保证数据已完整写到磁盘。
+        _ioGate.Wait();
+        try
+        {
+            WriteToDisk(snapshot);
+        }
+        finally
+        {
+            _ioGate.Release();
+        }
+    }
+
     /// <summary>
     /// 防抖延迟写盘主体：等待 <see cref="DebounceDelay"/>，期间被取消则直接返回。
     /// </summary>
@@ -191,10 +224,20 @@ public sealed class ConfigurationService : IConfigurationService, IDisposable
     }
 
     /// <summary>
-    /// 原子写盘：先写临时文件再覆盖目标，避免写一半崩溃留下损坏的配置。
+    /// 原子写盘（异步包装）：先写临时文件再覆盖目标，避免写一半崩溃留下损坏的配置。
     /// 注意：JSON 文件按规范【不带 BOM】（见 <see cref="Utf8NoBom"/>）。
     /// </summary>
     private async Task WriteToDiskAsync(AppConfig config, CancellationToken cancellationToken)
+    {
+        // 真正的写盘逻辑只有同步一条路径（<see cref="WriteToDisk"/>），
+        // 保证 Flush（同步）与防抖写盘（异步）的落盘行为完全一致。
+        await Task.Run(() => WriteToDisk(config), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 同步原子写盘核心：写临时文件 → File.Move 覆盖目标（Windows 上覆盖已存在文件是标准用法）。
+    /// </summary>
+    private void WriteToDisk(AppConfig config)
     {
         string? directory = Path.GetDirectoryName(_configFilePath);
         if (!string.IsNullOrEmpty(directory))
@@ -205,9 +248,8 @@ public sealed class ConfigurationService : IConfigurationService, IDisposable
         string json = JsonSerializer.Serialize(config, SerializerOptions);
 
         string tempPath = _configFilePath + ".tmp";
-        await File.WriteAllTextAsync(tempPath, json, Utf8NoBom, cancellationToken).ConfigureAwait(false);
+        File.WriteAllText(tempPath, json, Utf8NoBom);
 
-        // Linux 上 File.Move(overwrite:true) 可原子覆盖；Windows 上覆盖已存在文件是标准用法。
         File.Move(tempPath, _configFilePath, overwrite: true);
     }
 

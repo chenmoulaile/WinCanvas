@@ -9,6 +9,8 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- 壁纸预览控制器经 IMemoryBufferByteAccess COM 接口直读 SoftwareBitmap 像素，需要不安全代码 -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- WinUI 3 -->
     <UseWinUI>true</UseWinUI>

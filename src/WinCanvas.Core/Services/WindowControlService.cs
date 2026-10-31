@@ -106,6 +106,35 @@ public sealed class WindowControlService : IWindowControlService
     }
 
     /// <inheritdoc/>
+    public Task<bool> GetIsTopmostAsync(IntPtr hwnd)
+    {
+        return Task.Run(() =>
+        {
+            // 读取扩展样式并检查 WS_EX_TOPMOST 置顶位（GetWindowLong 是同步调用，放线程池避免卡 UI）。
+            int exStyle = NativeMethods.GetWindowLongPtrCompat(hwnd, NativeMethods.GWL_EXSTYLE).ToInt32();
+            return (exStyle & NativeMethods.WS_EX_TOPMOST) != 0;
+        });
+    }
+
+    /// <inheritdoc/>
+    public Task SetTopmostAsync(IntPtr hwnd, bool topmost)
+    {
+        return Task.Run(() =>
+        {
+            // 幂等语义：按目标状态直接把窗口插入 Z 序的置顶组 / 非置顶组。
+            IntPtr insertAfter = topmost ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST;
+
+            // SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE：只改 Z 序，不动位置尺寸、不抢焦点。
+            uint flags = NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE;
+            if (!NativeMethods.SetWindowPos(hwnd, insertAfter, 0, 0, 0, 0, flags))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    $"SetWindowPos 设置窗口 0x{hwnd:X} 置顶状态({topmost})失败。");
+            }
+        });
+    }
+
+    /// <inheritdoc/>
     public Task SetTransparencyAsync(IntPtr hwnd, byte alpha)
     {
         return Task.Run(() =>
@@ -126,12 +155,15 @@ public sealed class WindowControlService : IWindowControlService
     {
         return Task.Run(() =>
         {
-            // WS_EX_TRANSPARENT 只有在 WS_EX_LAYERED 同时存在时才会生效，
-            // 因此两者必须成对设置 / 成对移除（见蓝图要求）。
+            // WS_EX_TRANSPARENT 只有在 WS_EX_LAYERED 同时存在时才会生效：
+            // - 启用穿透：两个样式位一并置位；
+            // - 关闭穿透：只清 WS_EX_TRANSPARENT，保留 WS_EX_LAYERED ——
+            //   透明度（SetTransparencyAsync）依赖分层样式，若一并清掉会把用户已设置的
+            //   透明效果一起抹掉，导致档案值与窗口真实状态不一致。
             int oldExStyle = NativeMethods.GetWindowLongPtrCompat(hwnd, NativeMethods.GWL_EXSTYLE).ToInt32();
             int newExStyle = enable
                 ? oldExStyle | NativeMethods.WS_EX_TRANSPARENT | NativeMethods.WS_EX_LAYERED // 同时置位
-                : oldExStyle & ~(NativeMethods.WS_EX_TRANSPARENT | NativeMethods.WS_EX_LAYERED); // 同时清零
+                : oldExStyle & ~NativeMethods.WS_EX_TRANSPARENT; // 仅清穿透位，保留 LAYERED
 
             if (newExStyle == oldExStyle)
             {

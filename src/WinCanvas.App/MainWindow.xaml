@@ -159,6 +159,22 @@
                                     <ProgressBar Maximum="100"
                                                  Value="{x:Bind ViewModel.WallpaperProgress, Mode=OneWay}"
                                                  IsIndeterminate="{x:Bind ViewModel.IsWallpaperLoading, Mode=OneWay}" />
+                                    <!-- 壁纸画面预览承载：图片帧 → Image 上屏；视频 → MediaPlayerElement 输出。
+                                         由 WallpaperPreviewController 在 code-behind 装配接线 -->
+                                    <Border Height="200"
+                                            CornerRadius="4"
+                                            Background="{ThemeResource LayerFillColorDefaultBrush}"
+                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                            BorderThickness="1"
+                                            Padding="4">
+                                        <Grid>
+                                            <Image x:Name="WallpaperPreviewImage"
+                                                   Stretch="Uniform" />
+                                            <MediaPlayerElement x:Name="WallpaperPreviewPlayer"
+                                                                AreTransportControlsEnabled="False"
+                                                                Visibility="Collapsed" />
+                                        </Grid>
+                                    </Border>
                                     <TextBlock Text="{x:Bind ViewModel.WallpaperFilePathText, Mode=OneWay}"
                                                Style="{ThemeResource CaptionTextBlockStyle}"
                                                Opacity="0.8" TextTrimming="CharacterEllipsis" />
