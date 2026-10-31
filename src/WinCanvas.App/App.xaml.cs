@@ -1,9 +1,10 @@
 using Microsoft.UI.Xaml;
+using WinCanvas.App.Services;
 
 namespace WinCanvas.App;
 
 /// <summary>
-/// 应用入口（WinUI 3 空壳）：仅负责创建并激活占位主窗口。
+/// 应用入口：创建组合根（各服务实例），再创建并激活主窗口。
 /// </summary>
 public partial class App : Application
 {
@@ -15,11 +16,13 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// 启动完成回调：创建占位主窗口并激活。
+    /// 启动完成回调：构造 AppServices（窗口控制 / 配置用 Core 实现，
+    /// 壁纸与 WinTips 集成用 WinCanvas.Wallpaper 实现）并注入 MainWindow。
     /// </summary>
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        _window = new MainWindow();
+        var services = new AppServices();
+        _window = new MainWindow(services);
         _window.Activate();
     }
 }

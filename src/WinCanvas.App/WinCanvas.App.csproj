@@ -35,6 +35,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\WinCanvas.Core\WinCanvas.Core.csproj" />
+    <!-- 壁纸服务（三层加载策略 + 渲染循环）与 WinTips 集成服务（WinCanvas.Wallpaper 类库） -->
+    <ProjectReference Include="..\WinCanvas.Wallpaper\WinCanvas.Wallpaper.csproj" />
   </ItemGroup>
 
 </Project>

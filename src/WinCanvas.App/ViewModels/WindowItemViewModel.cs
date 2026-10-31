@@ -1,0 +1,222 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+using WinCanvas.Core.Interfaces;
+using WinCanvas.Core.Models;
+
+namespace WinCanvas.App.ViewModels;
+
+/// <summary>
+/// 窗口列表项：包装 <see cref="WindowInfo"/>（运行期快照）与持久化 <see cref="WindowState"/>。
+/// 属性变更时立即调用 Core 的 <see cref="IWindowControlService"/> 把改动应用到真实窗口，
+/// 并通过外层传入的持久化回调（内部走 <see cref="IConfigurationService"/>）实时保存。
+/// </summary>
+public partial class WindowItemViewModel : ObservableObject
+{
+    private readonly IWindowControlService _windowControl;
+    private readonly Action<WindowState> _persist;
+    private readonly Action<string> _reportError;
+
+    /// <summary>已实际应用到 Win32 窗口的值（用于避免重复调用服务）。</summary>
+    private bool _appliedTopmost;
+    private bool _appliedClickThrough;
+    private byte _appliedAlpha = 255;
+    private CornerPreference _appliedCorner = CornerPreference.Default;
+
+    /// <summary>枚举到的窗口运行期快照。</summary>
+    public WindowInfo Info { get; }
+
+    /// <summary>该窗口的持久化状态（变更后由外层实时写盘）。</summary>
+    public WindowState State { get; }
+
+    /// <summary>目标窗口句柄。</summary>
+    public IntPtr Hwnd => Info.Hwnd;
+
+    /// <summary>列表主标题（无标题窗口给占位文案）。</summary>
+    public string DisplayName { get; }
+
+    /// <summary>列表副标题：进程名 (进程Id) · 类名。</summary>
+    public string Subtitle { get; }
+
+    /// <summary>句柄的十六进制展示文本。</summary>
+    public string HwndText { get; }
+
+    [ObservableProperty]
+    private bool _isTopmost;
+
+    [ObservableProperty]
+    private byte _alpha = 255;
+
+    [ObservableProperty]
+    private bool _clickThrough;
+
+    [ObservableProperty]
+    private CornerPreference _corner = CornerPreference.Default;
+
+    public WindowItemViewModel(
+        WindowInfo info,
+        WindowState state,
+        IWindowControlService windowControl,
+        Action<WindowState> persist,
+        Action<string> reportError)
+    {
+        Info = info;
+        State = state;
+        _windowControl = windowControl;
+        _persist = persist;
+        _reportError = reportError;
+
+        DisplayName = string.IsNullOrWhiteSpace(info.Title) ? "（无标题窗口）" : info.Title;
+        Subtitle = $"{info.ProcessName} ({info.ProcessId}) · {info.ClassName}";
+        HwndText = $"0x{info.Hwnd.ToInt64():X}";
+
+        // 把持久化的值恢复到界面属性（真正应用到窗口在选中时由 RestoreAsync 执行）
+        IsTopmost = state.IsTopmost;
+        Alpha = state.Alpha;
+        ClickThrough = state.ClickThrough;
+        Corner = state.Corner;
+    }
+
+    /// <summary>
+    /// 选中该窗口时恢复其已保存的属性档案：
+    /// 把持久化的置顶 / 透明 / 穿透 / 圆角值实际应用回窗口，
+    /// 保证界面开关、档案值与窗口真实状态三者一致（否则置顶开关与 ToggleTopmostAsync
+    /// 的「翻转」语义会对不上）。
+    /// </summary>
+    public async Task RestoreAsync()
+    {
+        try
+        {
+            // 置顶：接口只有 Toggle 语义，档案为置顶时翻一次使其进入置顶态
+            if (State.IsTopmost)
+            {
+                var actual = await _windowControl.ToggleTopmostAsync(Hwnd);
+                _appliedTopmost = actual;
+                State.IsTopmost = actual;
+                IsTopmost = actual;
+            }
+            else
+            {
+                _appliedTopmost = false;
+            }
+
+            // 透明度：档案不是默认不透明时应用
+            if (State.Alpha != 255)
+            {
+                await _windowControl.SetTransparencyAsync(Hwnd, State.Alpha);
+            }
+            _appliedAlpha = State.Alpha;
+
+            // 鼠标穿透：档案开启时应用
+            if (State.ClickThrough)
+            {
+                await _windowControl.EnableClickThroughAsync(Hwnd, true);
+                _appliedClickThrough = true;
+            }
+            else
+            {
+                _appliedClickThrough = false;
+            }
+
+            // 圆角：档案非系统默认时应用
+            if (State.Corner != CornerPreference.Default)
+            {
+                await _windowControl.SetCornerPreferenceAsync(Hwnd, State.Corner);
+            }
+            _appliedCorner = State.Corner;
+
+            ClickThrough = State.ClickThrough;
+            Corner = State.Corner;
+            Alpha = State.Alpha;
+        }
+        catch (Exception ex)
+        {
+            _reportError($"恢复窗口「{DisplayName}」的已保存属性失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>切换置顶（接口为 Toggle 语义：翻转后以服务返回的实际状态为准）。</summary>
+    public async Task SetTopmostAsync(bool desired)
+    {
+        try
+        {
+            var actual = await _windowControl.ToggleTopmostAsync(Hwnd);
+            _appliedTopmost = actual;
+            IsTopmost = actual;
+            State.IsTopmost = actual;
+            _persist(State);
+            if (actual != desired)
+            {
+                _reportError($"窗口「{DisplayName}」置顶结果与请求不一致，当前实际为：{(actual ? "已置顶" : "未置顶")}。");
+            }
+        }
+        catch (Exception ex)
+        {
+            _reportError($"切换窗口「{DisplayName}」置顶失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>设置透明度（0 全透明 ~ 255 不透明）并实时保存。</summary>
+    public async Task SetAlphaAsync(byte alpha)
+    {
+        if (alpha == _appliedAlpha)
+        {
+            return;
+        }
+
+        try
+        {
+            await _windowControl.SetTransparencyAsync(Hwnd, alpha);
+            _appliedAlpha = alpha;
+            Alpha = alpha;
+            State.Alpha = alpha;
+            _persist(State);
+        }
+        catch (Exception ex)
+        {
+            _reportError($"设置窗口「{DisplayName}」透明度失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>启用 / 关闭鼠标穿透并实时保存。</summary>
+    public async Task SetClickThroughAsync(bool enable)
+    {
+        if (enable == _appliedClickThrough)
+        {
+            return;
+        }
+
+        try
+        {
+            await _windowControl.EnableClickThroughAsync(Hwnd, enable);
+            _appliedClickThrough = enable;
+            ClickThrough = enable;
+            State.ClickThrough = enable;
+            _persist(State);
+        }
+        catch (Exception ex)
+        {
+            _reportError($"设置窗口「{DisplayName}」鼠标穿透失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>设置圆角偏好（无 / 大圆角 / 小圆角）并实时保存。</summary>
+    public async Task SetCornerAsync(CornerPreference preference)
+    {
+        if (preference == _appliedCorner)
+        {
+            return;
+        }
+
+        try
+        {
+            await _windowControl.SetCornerPreferenceAsync(Hwnd, preference);
+            _appliedCorner = preference;
+            Corner = preference;
+            State.Corner = preference;
+            _persist(State);
+        }
+        catch (Exception ex)
+        {
+            _reportError($"设置窗口「{DisplayName}」圆角失败：{ex.Message}");
+        }
+    }
+}

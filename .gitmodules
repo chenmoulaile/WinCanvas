@@ -1,0 +1,6 @@
+[submodule "ThirdParty/repkg"]
+	path = ThirdParty/repkg
+	url = https://github.com/notscuffed/repkg
+[submodule "ThirdParty/WinTips"]
+	path = ThirdParty/WinTips
+	url = https://github.com/DoYouNatureQ/WinTips

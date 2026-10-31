@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 壁纸 / 动态背景服务类库：与 WinCanvas.Core 相同的 WinUI 兼容目标框架 -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>WinCanvas.Wallpaper</RootNamespace>
+    <!-- 关闭对旧式 P/Invoke 分析器的强制告警，Native/NativeMethods 中已按规范手写注释 -->
+    <NoWarn>$(NoWarn);CA1401;CA5392</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WinCanvas.Core：IWallpaperService / IStatusNotifier 接口与模型 -->
+    <ProjectReference Include="..\WinCanvas.Core\WinCanvas.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- RePKG（git 子模块 ThirdParty/repkg）：Wallpaper Engine .pkg/.tex 解析核心。
+         其目标框架为 netstandard2.0（该 TFM 兼容性最好，可被 net8.0-windows 直接引用），
+         故按"子模块源码项目引用"集成，而非进程调用或移植解析代码。
+         RePKG.Application 提供 PackageReader / TexReader / TexToImageConverter；
+         RePKG.Core 提供包与纹理的数据模型。 -->
+    <ProjectReference Include="..\..\ThirdParty\repkg\RePKG.Core\RePKG.Core.csproj" />
+    <ProjectReference Include="..\..\ThirdParty\repkg\RePKG.Application\RePKG.Application.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 图片解码 / 导入缩放（第一层壁纸）：与 RePKG.Application 使用同一版本，
+         避免同一依赖出现两个版本 -->
+    <PackageReference Include="SixLabors.ImageSharp" Version="2.1.9" />
+  </ItemGroup>
+
+</Project>
