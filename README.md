@@ -49,7 +49,7 @@
 ```bash
 # 1. 克隆仓库（含子模块）
 git clone --recursive <本仓库地址>
-cd Window
+cd WinCanvas
 
 # 若已克隆过，补拉子模块：
 git submodule update --init --recursive
@@ -61,7 +61,7 @@ dotnet build WinCanvas.sln -c Debug
 # 产物位于 src/WinCanvas.App/bin/x64/Debug/net8.0-windows10.0.19041.0/win-x64/WinCanvas.App.exe
 ```
 
-> 本解决方案当前无自动化测试项目；`dotnet build` 是唯一可一键执行的验证手段。
+> 验证手段：`dotnet build WinCanvas.sln`（0 error 为过）+ `dotnet test`（xUnit 测试，当前覆盖窗口档案键语义等核心模型，见 `tests/`）。
 
 ## 使用说明
 

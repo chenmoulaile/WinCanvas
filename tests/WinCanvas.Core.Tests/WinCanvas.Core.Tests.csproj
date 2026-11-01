@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- TFM 与被测项目 WinCanvas.Core 完全一致（net8.0-windows10.0.19041.0），
+         否则项目引用会因目标框架不兼容而无法解析。 -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- 测试程序集不打包、不生成文档文件，保持构建输出干净 -->
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <RootNamespace>WinCanvas.Core.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      测试栈（WP0 引入，版本均取本机 NuGet 缓存已有版本，零网络依赖可还原）：
+      - Microsoft.NET.Test.Sdk：VSTest 测试宿主与 `dotnet test` 入口；
+      - xunit：测试框架本体（Fact/Theory 断言体系）；
+      - xunit.runner.visualstudio：xUnit 与 VSTest 之间的适配器，
+        PrivateAssets=all 避免其作为传递依赖外溢到引用方。
+    -->
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 被测项目：窗口档案键（WindowInfo.Key / WindowState.Key）等核心模型所在 -->
+    <ProjectReference Include="..\..\src\WinCanvas.Core\WinCanvas.Core.csproj" />
+  </ItemGroup>
+
+</Project>
