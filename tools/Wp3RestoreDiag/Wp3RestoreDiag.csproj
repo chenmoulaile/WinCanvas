@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- WP3 档案恢复管线验收的临时诊断命令（规格允许「验证代码写入临时诊断命令或测试」）。
+         不加入 WinCanvas.sln：避免污染基线 warning 门禁与测试口径；
+         单独以 dotnet build 后直接运行 exe。TFM 与被测的 WinCanvas.Core 一致。
+         命令：
+           list                枚举可见顶层窗口（hwnd / Key / 进程 / 类名 / 标题）——为手工构造 config.json 提供档案 Key；
+           check <标题子串>    外部检查目标窗口的置顶 / 分层 / 透明 alpha / 穿透 / 圆角与挂接的壁纸宿主数量；
+           clear <标题子串>    把目标窗口的置顶 / 分层透明 / 穿透 / 圆角复位到系统默认（测试前的基线复位）；
+           hosts               统计全系统残留的 WinCanvasWallpaperHost 宿主窗口（应用退出后应为 0）。 -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Wp3RestoreDiag</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 复用 Core 的窗口枚举（可见顶层窗口 + 档案 Key「进程名|类名」），避免在工具里重写一份枚举 -->
+    <ProjectReference Include="..\..\src\WinCanvas.Core\WinCanvas.Core.csproj" />
+  </ItemGroup>
+
+</Project>

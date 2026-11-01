@@ -176,21 +176,52 @@ flowchart LR
 - `IsEnabled` 开关关闭时静默忽略，不产生进程启动或回退事件。
 - WinTips 子模块本身（net10.0-windows WPF WinExe）不加入 `WinCanvas.sln`、不项目引用：由 `WinCanvas.App.csproj` 的 `BuildAndDeployWinTips` Target（`AfterTargets="Build"`，Inputs/Outputs 增量）用 .NET 10 SDK 外挂构建 `-c Release` 并把产物拷到 `$(OutDir)WinTips\`；构建失败仅产生 warning（运行期自动走 InfoBar 回退），不阻断主构建。
 
-## 5. MVVM 与线程模型
+## 5. 状态重启自动恢复（WP3，src/WinCanvas.App/ViewModels/MainViewModel.cs）
+
+目标：设置某窗口背景与属性 → 完全重启应用 → 不做任何操作，该窗口的置顶 / 透明 / 穿透 / 圆角 / 背景自动恢复。
+
+### 恢复管线（MainViewModel.QueueRestorePipeline / RunRestorePipelineCoreAsync）
+
+- **触发点**：`RefreshAsync` 在窗口列表重建完成后调用 `QueueRestorePipeline`——启动初始化
+  （`InitializeAsync → RefreshAsync`）与手动「刷新」都会触发；列表先可用，管线只入队即返回，
+  恢复全程后台进行（不阻塞首帧渲染）。
+- **排队策略**：待恢复档案按 **200ms 间隔逐个派发**（`RestoreDispatchIntervalMs`），
+  同时在途恢复不超过 **2** 个（`RestoreMaxConcurrency`，BCL `SemaphoreSlim`）——防启动风暴。
+- **管线串行**：多条管线经任务链（`_restorePipelineTask`）依次执行，连续刷新不会并发恢复。
+- **单窗口流程**：① 属性恢复——直接复用既有 `WindowItemViewModel.RestoreAsync`
+  （幂等置顶语义：先读 `WS_EX_TOPMOST` 真实状态，仅不一致时 Set），经 `DispatcherQueue.TryEnqueue`
+  封送到 UI 线程执行（`RestoreAsync` 会写可绑定属性，x:Bind 的更新不做跨线程封送；其内部
+  Win32 调用本就在线程池）；② 壁纸恢复——档案 `BackgroundPath` 存在且文件存在 →
+  复用 `IWallpaperService.UpdateWallpaperAsync`（内部经 `_updateGates` 每窗口串行 + 线程池加载）。
+- **幂等（不新增独立锁体系）**：会话级判重账本 `ConcurrentDictionary<IntPtr, byte>`
+  （`_pipelineProcessedHwnds`，原子 TryAdd / TryRemove）保证同一 hwnd 只恢复一次；
+  背景再用壁纸**会话字典**判重（`IWallpaperService.IsBackgroundActive`，实现查 `_sessions`
+  短临界区）跳过重复加载；恢复失败撤销判重标记，下次刷新可重试。
+- **背景文件缺失**：`File.Exists` 不通过时 InfoBar 警告「背景文件已不存在：…，档案保留」，
+  **不清除档案**（用户可能临时移动文件）；属性部分照常恢复。
+- **开关**：`AppConfig.AutoRestoreOnStartup`（默认 true）↔ 设置区「启动时自动恢复窗口状态」
+  Toggle；关闭时整条管线跳过（日志留证）。
+- **恢复匹配**：以 `WindowState.Key`（进程名|类名）为主键重新定位窗口，hwnd 重启后变化不影响。
+- **诊断日志**：`RestoreDiagnostics` → `%LOCALAPPDATA%/WinCanvas/logs/restore-diag.log`
+  （进程启动 / 列表可用 / 单窗口恢复 / 幂等跳过 / 文件缺失警告 / 全部完成，均带耗时）。
+  写入模型为「无界 Channel + 唯一后台任务落盘」：`Log()` 只做非阻塞入队，UI 线程可安全调用。
+
+## 6. MVVM 与线程模型
 
 ### MVVM
 
 - 采用 CommunityToolkit.Mvvm（`ObservableObject` + `[ObservableProperty]` + `[RelayCommand]` 源生成器），XAML 用 `x:Bind` 绑定 ViewModel。
 - `MainWindow` code-behind 只做视觉装饰（Mica / 标题栏）、服务装配与退出前 `FlushAsync`；业务逻辑全部在 `MainViewModel`（src/WinCanvas.App/ViewModels/MainViewModel.cs:29）。
-- `WindowItemViewModel` 包装运行期 `WindowInfo` 快照与持久化 `WindowState` 档案：属性变更立即应用 Win32 并持久化；`RestoreAsync` 在选中时把档案值真正应用回窗口，保证「界面开关 / 档案 / 窗口真实状态」三者一致。
+- `WindowItemViewModel` 包装运行期 `WindowInfo` 快照与持久化 `WindowState` 档案：属性变更立即应用 Win32 并持久化；`RestoreAsync` 在选中时把档案值真正应用回窗口，保证「界面开关 / 档案 / 窗口真实状态」三者一致（WP3 的恢复管线复用同一方法）。
 - 主界面使用**镜像属性**（`SelectedIsTopmost` 等）而不是把控件 TwoWay 直接绑到可空 `Selected`，防止换选瞬间旧控件值误写进新选中项（src/WinCanvas.App/ViewModels/MainViewModel.cs:103）。
+- 设置区开关「启动时自动恢复窗口状态」使用手写属性（`ObservableObject.SetProperty`）而非 `[ObservableProperty]`：后者在 WinUI 3 场景会生成 MVVMTK0045 警告，新增字段会突破 26 条 warning 门禁基线。
 
 ### 线程模型
 
 | 线程 | 职责 | 来源 |
 | --- | --- | --- |
 | UI 线程 | XAML / ViewModel 属性 / `DispatcherQueue.TryEnqueue` 封送后的提示更新 | WinUI 3 |
-| 线程池（Task.Run） | 窗口枚举、全部 Win32 窗口操作、壁纸资源准备（解码/解包）、配置防抖写盘、NumLock 上报派发 | `WindowControlService` / `WallpaperService` / `ConfigurationService` / `KeyboardIndicatorService` |
+| 线程池（Task.Run） | 窗口枚举、全部 Win32 窗口操作、壁纸资源准备（解码/解包）、配置防抖写盘、NumLock 上报派发、恢复管线排队与壁纸恢复（WP3） | `WindowControlService` / `WallpaperService` / `ConfigurationService` / `KeyboardIndicatorService` / `MainViewModel` 恢复管线 |
 | `WinCanvas.Wallpaper.Render` 后台线程 | 逐帧 `FrameTick` 回调、全屏检测（250ms 节流）、渲染状态上报 | `WallpaperRenderLoop`，BelowNormal 优先级 |
 | `WinCanvas.Wallpaper.HostPump` 专用消息线程 | 宿主窗口创建/销毁/跟随、WinEvent 钩子回调（WP1） | `WallpaperHostPump`，STA |
 | `WinCanvas.KeyboardHook` 专用消息线程 | LL 键盘钩子安装/回调/卸载，`GetMessageW` 循环空闲零 CPU（WP2） | `KeyboardIndicatorService`，Normal 优先级 |
@@ -200,9 +231,10 @@ flowchart LR
 - `ConfigurationService`：`_syncLock` 保护缓存与防抖任务，`SemaphoreSlim(1,1)` 串行化磁盘写，防抖 500ms 合并批量落盘（src/WinCanvas.Core/Services/ConfigurationService.cs:16）。
 - `WallpaperService`：`_gate` 锁保护会话字典，临界区只做会话替换；资源准备在锁外执行。
 - `DynamicFrameRateController`：三个 `volatile bool` 状态位，无锁读取。
-- 后台线程事件到 UI：统一经 `DispatcherQueue.TryEnqueue` 封送（`MainViewModel.ShowInfo` / FPS 文本）。
+- 恢复管线（WP3）：`_pipelineProcessedHwnds` 为 `ConcurrentDictionary` 原子判重账本（非锁体系）；管线串行靠任务链（`_restorePipelineTask`，UI 线程读写）；壁纸加载串行完全复用 `WallpaperService._updateGates` / `_gate` / 会话字典，未新增任何独立锁。
+- 后台线程事件到 UI：统一经 `DispatcherQueue.TryEnqueue` 封送（`MainViewModel.ShowInfo` / FPS 文本 / 恢复管线的属性应用）。
 
-## 6. 依赖与外部接口
+## 7. 依赖与外部接口
 
 | 依赖 | 形式 | 用途 |
 | --- | --- | --- |

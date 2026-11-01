@@ -418,9 +418,112 @@
 
 ---
 
-## 4. WP3 状态重启自动恢复（待开始）
+## 4. WP3 状态重启自动恢复（2026-11-01）
 
-> 预留区块：档案恢复管线 / 配置开关。完成后按同一结构补录。
+**状态**：完成。提交：`feat(WP3): 启动自动恢复管线`（分支 `feat/complete-w0-w5`）。
+
+### 4.1 改动清单
+
+| 文件 | 变更 | 内容 |
+| --- | --- | --- |
+| `src/WinCanvas.Core/Models/AppConfig.cs` | 扩展 | 新增 `AutoRestoreOnStartup`（默认 `true`）：关闭后启动 / 手动刷新都跳过整条恢复管线，档案保留 |
+| `src/WinCanvas.Core/Interfaces/IWallpaperService.cs` | 扩展 | 新增 `IsBackgroundActive(IntPtr hwnd, string path)`：会话字典判重查询（恢复管线跳过重复加载） |
+| `src/WinCanvas.Wallpaper/WallpaperService.cs` | 扩展 | 实现 `IsBackgroundActive`：`_gate` 短临界区内查 `_sessions`，比对 `session.Source.OriginalPath`（`Path.GetFullPath` 规范化 + 大小写不敏感；GetFullPath 失败按「未激活」处理，宁可多加载不误判已恢复）。未新增任何锁 |
+| `src/WinCanvas.App/Services/RestoreDiagnostics.cs` | 新增 | 恢复管线诊断日志（`%LOCALAPPDATA%\WinCanvas\logs\restore-diag.log`）：无界 Channel + 唯一后台任务按入队顺序落盘，`Log()` 只做非阻塞入队（UI 线程可安全调用，零文件 IO）；范式与 HostDiagnostics / KeyboardDiagnostics 一致（行格式 `时刻 [线程Id] 文本`，可三份日志按时间轴对齐） |
+| `src/WinCanvas.App/ViewModels/MainViewModel.cs` | 扩展 | ① 档案恢复管线：`QueueRestorePipeline`（开关检查 + 档案过滤 + 任务链入队）→ `RunRestorePipelineCoreAsync`（200ms 间隔逐个派发 + `SemaphoreSlim(2,2)` 并发上限）→ `RestoreOneAsync`（判重 → 属性恢复封送 UI → 壁纸恢复 / 缺失警告）；② `RefreshAsync` 列表重建完成后触发（启动 `InitializeAsync` 与手动「刷新」共用）；③ 设置开关 `AutoRestoreOnStartup`（手写 `SetProperty` 属性，见决策 3）+ 初始化回填抑制标志；④ 启动 / 列表可用 / 恢复完成打点 |
+| `src/WinCanvas.App/MainWindow.xaml` | 扩展 | 设置区新增「启动时自动恢复窗口状态」ToggleSwitch（TwoWay 绑 ViewModel） |
+| `tools/Wp3RestoreDiag/`（Program.cs + csproj） | 新增 | WP3 验收诊断命令（不入 sln，TFM 与 Core 一致）：`list`（枚举 + 档案 Key）/ `check`（外部读 `WS_EX_TOPMOST` / `WS_EX_TRANSPARENT` / `WS_EX_LAYERED` / LWA alpha / DWM 圆角 + 目标子窗口与顶层宿主计数）/ `clear`（窗口属性复位基线）/ `hosts`（宿主残留计数）/ `close`（按句柄 WM_CLOSE 测试现场清理）。自带 P/Invoke 注释规格与 NativeMethods.cs 一致 |
+| `README.md` / `docs/architecture.md` / `docs/api.md` / `docs/risk.md` | 同步 | README 新增「状态重启自动恢复」功能小节、使用说明第 2/4 条改写、已知限制新增「恢复按组合键匹配、同键共享档案」；architecture.md 新增 §5 恢复管线（原 §5/§6 顺延为 §6/§7）、线程表与跨线程保护补充；api.md 补 `IsBackgroundActive` / `AutoRestoreOnStartup`，并修正既有失真（组合键「进程名\|标题」→ 实际实现「进程名\|类名」，与代码 `WindowInfo.Key` 一致）；risk.md §3 补启动风暴 / UI 解耦缓解，§6 矩阵新增 WP3 行 |
+
+### 4.2 关键决策与理由
+
+1. **管线触发点与解耦**：管线挂在 `RefreshAsync` 枚举完成之后（规格任务 1/2 的字面位置），`QueueRestorePipeline` 只入队即返回——列表先可用、恢复后台进行。启动（`InitializeAsync`）与手动刷新天然共用同一入口，无需第二套触发逻辑。
+2. **幂等判重完全复用既有并发结构，未新增锁体系**（规格禁止）：壁纸侧用服务**会话字典**（新接口成员 `IsBackgroundActive` 只读 `_sessions`，走既有 `_gate` 短临界区）；属性侧用会话级判重账本 `ConcurrentDictionary<IntPtr, byte>`（原子 TryAdd/TryRemove，判重账本而非锁）；多条管线靠任务链（`_restorePipelineTask`，仅 UI 线程读写）串行。壁纸更新的真正串行化仍由既有 `_updateGates` 完成，一分未动。
+3. **「启动自动恢复」开关用手写 `SetProperty` 属性而非 `[ObservableProperty]`**：MVVM 工具包对 WinUI 3 场景的字段型可观察属性报 MVVMTK0045 警告（AOT 不兼容），现有 26 条基线警告中该类占大头；新增一个 `[ObservableProperty]` 字段会突破 WP0 的 warning 基线门禁，故复用 `ObservableObject.SetProperty` 实现等价变更通知，零新增警告。
+4. **属性恢复封送 UI 线程执行（`RestorePropertiesOnUiThreadAsync`）**：复用的 `RestoreAsync` 会写 `WindowItemViewModel` 可绑定属性，x:Bind 的界面更新不做跨线程封送，后台线程触发通知可能崩溃。实现为后台管线经 `DispatcherQueue.TryEnqueue` 逐个封送（200ms 间隔、并发 2 不变），UI 线程任意时刻至多持有一个轻量恢复片（await 间让出，Win32 调用本就在 `WindowControlService` 的线程池）——满足「恢复动作后台化、禁止 UI 线程同步串行执行全部恢复」的规格意图。壁纸恢复（重活）全程线程池。
+5. **背景文件缺失的警告通道**：规格写「`StatusReported` 警告」，但 `StatusReported` 是 `WallpaperService` 的内部事件，管线位于 ViewModel 层无法（也不应）代发；选择等价 UI 通道 `ShowInfo(Warning, …)`（即 `StatusReported` 消息最终的呈现位置 InfoBar），文案三要素齐全（已不存在 + 档案保留 + 用户能做什么），并同步落 restore-diag.log 供验收。**档案保留语义严格按规格实现**（不清除 `BackgroundPath`）。
+6. **管线恢复的窗口筛选**：只处理「`State` 引用包含在 `_appConfig.Windows` 中」的窗口（有档案者 State 即配置对象，引用相等可判）；无档案窗口的枚举期临时 State 不触发空跑。
+7. **验收用外部证据不信任被测程序自述**：属性恢复用独立进程的 `tools/Wp3RestoreDiag` 读真实窗口样式位（TOPMOST / TRANSPARENT / LAYERED / alpha / DWM 圆角）与宿主子窗口计数；时间戳用 `Process.StartTime`（日志内）与外部 `date` 命令双口径互证。
+
+### 4.3 验证证据摘要
+
+**门禁**（口径=WORKLOG §0.2）：
+- `dotnet clean WinCanvas.sln -c Debug` → `dotnet build WinCanvas.sln -c Debug` = **0 个错误 / 26 个警告**（= WP0 基线 26，WP3 零新增；新增代码无任何编译警告）。
+- `dotnet test WinCanvas.sln -c Debug --no-build` = **6/6 通过**。
+- `tools/Wp3RestoreDiag` 独立构建 0 错误 0 警告（不入 sln，不占门禁口径）。
+
+**测试环境构造**：备份并沙箱化 `%APPDATA%/WinCanvas/config.json`（测试后已还原为备份原文 `{Version:1, Windows:[]}`）；目标窗口 = 记事本（`Key="Notepad|Notepad"`），档案置 `IsTopmost=true / Alpha=200 / ClickThrough=true / Corner=2(Round) / Background=Image / BackgroundPath=<512x512 渐变 PNG>`；每轮测试前用 `Wp3RestoreDiag clear` 复位窗口属性基线（外部检查确认复位成功）。
+
+**DoD 1：设置背景+透明+穿透 → 完全重启 → 2s 内自动恢复**（两轮独立验证）：
+
+- 第 1 轮（外部计时 `date`：15:52:07.803 启动命令）restore-diag.log 原文：
+  ```
+  15:52:08.774 [01] 启动初始化开始：PID=11556，进程启动于 15:52:07.866（自 ViewModel 构造 47 ms）。
+  15:52:08.909 [01] 窗口列表重建完成：14 项（配置档案 1 份），自 ViewModel 构造 187 ms —— 列表可用。
+  15:52:08.912 [10] 档案恢复管线：开始，待恢复档案 1 个（200ms 间隔排队 / 并发上限 2）。
+  15:52:08.917 [11] 恢复管线：hwnd=0x141432「无标题 - Notepad」开始恢复（置顶=True，透明=200，穿透=True，圆角=Round，背景=…bg.png）。
+  15:52:09.173 [09] 恢复管线：hwnd=0x141432 恢复完成（属性 + 背景 bg.png，单窗口 250 ms）。
+  15:52:09.173 [09] 档案恢复管线：全部完成，本条管线耗时 266 ms。
+  ```
+  **进程启动 15:52:07.866 → 恢复完成 15:52:09.173 = 1307ms < 2s**。
+- 第 2 轮（21 个可见顶层窗口）：进程启动 15:56:44.188 → 列表可用 15:56:44.883（**695ms**）→ 恢复完成 15:56:45.136（**948ms**，单窗口 250ms）。
+- 外部检查（`Wp3RestoreDiag check "Notepad"`，独立进程读真实窗口状态）：`WS_EX_TOPMOST=True / WS_EX_TRANSPARENT=True / WS_EX_LAYERED=True / Layered alpha=200 / Corner pref=2`，且 `[A1 宿主] hwnd=0x580226（目标的子窗口）`、host-diag.log `A1 建立完成 … 宽高一致=True` + `DComp 图像上屏 host=… surface=1934x1270`——背景真实上屏到目标窗口。
+- **跨重启 Key 匹配**：两轮目标 hwnd 不同（0x141432 → 0xA40C52，记事本被外部关闭后重开），档案仍按 `Key` 命中并恢复——验证「hwnd 重启后变化不影响恢复」的设计。
+
+**DoD 2：背景文件移走 → 警告 + 档案保留；放回 → 再重启可恢复**：
+
+- 移走文件重启：restore-diag.log `15:59:05.909 恢复管线：hwnd=0xA40C52 背景文件已不存在（…bg.png），已警告且档案保留。`；UIA 读 InfoBar 原文：`背景文件已不存在：C:\Users\chenk\AppData\Local/Temp/wp3test/bg.png，档案保留；请把文件放回原位置后重启应用，或重新为该窗口选择背景文件。`；外部检查：属性仍恢复（TOPMOST/alpha200/穿透/圆角全 True/200）、**A1 子窗口宿主 = 0**（无背景挂接）。
+- 应用退出后读 config.json：`BackgroundPath` 与 `Background: 1` 原样保留（档案未清除）。
+- 放回文件重启：`15:59:49.642 恢复完成（属性 + 背景 bg.png，单窗口 203 ms）`，进程启动 → 恢复完成 = **709ms**，外部检查 A1 宿主重建（hwnd=0x81204）。
+
+**DoD 3：关闭「启动自动恢复」→ 零恢复动作**：
+
+- 配置 `AutoRestoreOnStartup=false` + `clear` 复位后重启，restore-diag.log 仅两行业务打点：
+  ```
+  16:00:09.646 [01] 窗口列表重建完成：20 项（配置档案 1 份），自 ViewModel 构造 125 ms —— 列表可用。
+  16:00:09.647 [01] 档案恢复管线：AutoRestoreOnStartup=false，跳过全部恢复（本次枚举 20 项）。
+  ```
+  无任何「开始恢复 / 恢复完成」行——管线未执行。外部检查确认窗口未被触碰（TOPMOST=False / LAYERED=False / alpha=255 / corner=1(即 clear 复位值) / 宿主=0）。
+
+**DoD 4：20+ 窗口枚举下，启动到列表可用 < 1.5s**：
+
+- 构造 20~21 个可见顶层窗口（本机原始 14 个 + `start cmd`×8（Win11 默认终端，成为 8 个 Windows Terminal 窗口）+ 记事本）：**列表可用 695ms（21 项）/ 1043ms（14 项）/ 125ms（20 项，第 3 轮）/ 171ms（11 项冒烟）**，全部 < 1.5s；列表可用打点先于管线触发打点（解耦的直接证据）。
+
+**DoD 5：手动刷新幂等（不重复恢复同一窗口）**：
+
+- 应用运行中经 UIA `InvokePattern` 触发「刷新」按钮（本轮 Invoke 意外触发了两次刷新 → 两条背靠背管线，反而构成并发压力用例）：
+  ```
+  15:58:30.106 [01] 窗口列表重建完成：20 项（配置档案 1 份）…… —— 列表可用。
+  15:58:30.106 [10] 档案恢复管线：开始，待恢复档案 1 个（200ms 间隔排队 / 并发上限 2）。
+  15:58:30.107 [07] 恢复管线：hwnd=0xA40C52「无标题 - Notepad」本会话已恢复过，幂等跳过。
+  15:58:30.107 [07] 档案恢复管线：全部完成，本条管线耗时 0 ms。
+  15:58:30.425 [01] 窗口列表重建完成：20 项……
+  15:58:30.425 [07] 档案恢复管线：开始，待恢复档案 1 个（200ms 间隔排队 / 并发上限 2）。
+  15:58:30.425 [04] 恢复管线：hwnd=0xA40C52「无标题 - Notepad」本会话已恢复过，幂等跳过。
+  15:58:30.425 [04] 档案恢复管线：全部完成，本条管线耗时 0 ms。
+  ```
+  host-diag.log 同窗口期 **0 条新增**（无重复解码 / 无重复上屏 / 无宿主重建）——双重判重（会话账本 + 会话字典）未触发任何真实恢复动作。
+
+**应用退出零残留**（复用 WP1 口径）：每轮以 `taskkill /PID`（WM_CLOSE 优雅关闭）退出后 `Wp3RestoreDiag hosts` = **0**。
+
+**测试现场清理**：8 个测试用 Windows Terminal 窗口经诊断工具 `close` 命令（WM_CLOSE）逐窗口关闭、测试记事本结束、测试图片删除、config.json 还原为备份原文；清理后 `hosts` = 0。
+
+### 4.4 未取得 / 环境异常（如实记录）
+
+- **第 1 轮验证中途测试窗口被外部关闭**：15:53:35 host-diag.log 记录「目标丢失 target=0x141432 原因：宿主 WM_DESTROY（随目标链式销毁或外力销毁）」，随后应用退出。事件日志（Application）中无 WinCanvas 崩溃记录（仅 15:48 有与本程序无关的 explorer.exe / sandbox-center.exe 错误），判定为本机用户实时操作所致（测试期间 Chrome / Sublime / 远程控制均活跃）。**该轮全部 DoD 证据（外部样式检查输出 + 日志时间戳）在关闭前已采集完整**，不影响结论；随后以第 2 轮完整复验。
+- **本机 PowerShell 环境降级**：`Add-Type -AssemblyName UIAutomationClient`、PS 模块自动加载、`Add-Type` 内联编译在该会话均失败（原因未深查，非本仓库问题）；改用 `LoadWithPartialName` 内联命令（UIA 找按钮 + InvokePattern）完成「手动刷新」触发，测试现场清理改由诊断工具 `close` 命令（PostMessageW WM_CLOSE）完成。
+- **「枚举 20+ 窗口」前提的达成方式**：本机空闲状态仅 14 个可见顶层窗口，测试以 `start cmd`×8 + 记事本补足至 20~21 个（这些批量窗口无档案、不参与恢复，只进入枚举列表）；严格说这是「构造出的 20+」而非「天然 20+」，但枚举路径与耗时构成一致。
+
+### DoD 自检
+
+- [x] 设置背景+透明+穿透 → 完全重启应用 → 2s 内目标窗口背景与属性自动恢复（WORKLOG §4.3 时间戳证据：1307ms / 948ms / 709ms 三轮 < 2s；外部窗口样式检查 + A1 宿主上屏）
+- [x] 背景文件被移走后重启：出现警告提示（InfoBar 原文经 UIA 读出 + 日志行），档案保留（退出后 config.json 复核），再放回文件重启可恢复（709ms 恢复 + 宿主重建）
+- [x] 关闭「启动自动恢复」后重启：零恢复动作（日志仅「AutoRestoreOnStartup=false，跳过全部恢复」一行 + 外部检查窗口未被触碰）
+- [x] 枚举 20+ 窗口的机器上，启动到列表可用 < 1.5s（695ms@21 项 / 1043ms@14 项 / 125ms@20 项，打点先于管线触发）
+- [x] 手动刷新不重复恢复同一窗口（UIA 触发刷新 → 两条管线均幂等跳过 0ms，host-diag 零新增；双管线背靠背未并发重复恢复）
+- [x] 提交 `feat(WP3): 启动自动恢复管线`；README「置顶一致性」等已知限制逐条核对（原条目仍属实予以保留，新增「恢复按组合键匹配、同键共享档案」真实残留条目），README / docs 三件套同步更新
+
+**禁止事项自查**：未在 UI 线程同步串行执行全部恢复（后台管线 + 逐个封送，UI 线程仅毫秒级属性片）；未为恢复管线新增独立锁体系（判重=会话账本 ConcurrentDictionary 原子操作 + 壁纸会话字典查询，串行=任务链；`_updateGates`/`_gate`/`_tickGate`/配置防抖一分未动）；未绕过任何既有并发语义；文档未宣称代码未实现的能力。
 
 ## 5. WP4 自动化测试工程（待开始）
 

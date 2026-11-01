@@ -77,6 +77,15 @@ public interface IWallpaperService
     /// <summary>运行期切换指定窗口的背景资源。</summary>
     Task UpdateWallpaperAsync(IntPtr hwnd, string path);
 
+    /// <summary>
+    /// 查询指定窗口当前是否已挂着「同一背景文件」的活动壁纸会话（WP3）。
+    /// 供启动 / 刷新时的档案恢复管线判重：会话已存在则跳过重复加载。
+    /// </summary>
+    /// <param name="hwnd">承载壁纸的窗口句柄。</param>
+    /// <param name="path">背景资源路径（与档案里保存的一致）。</param>
+    /// <returns>true = 该窗口已有同一背景文件的活动会话（恢复可跳过）。</returns>
+    bool IsBackgroundActive(IntPtr hwnd, string path);
+
     /// <summary>暂停渲染（例如系统进入省电模式或窗口不可见时）。</summary>
     void PauseRendering();
 
@@ -102,12 +111,12 @@ public interface IStatusNotifier
 
 ### 2.1 WindowState（持久化模型，src/WinCanvas.Core/Models/WindowState.cs）
 
-单个被管理窗口的持久化状态。窗口唯一标识 = 「进程名 + 标题」组合键，辅以 hwnd 值哈希做运行期匹配（hwnd 重启后可能变化，恢复时以 `Key` 为主键）。
+单个被管理窗口的持久化状态。窗口唯一标识 = 「进程名|类名」组合键（成员转义防碰撞），辅以 hwnd 值哈希做运行期匹配（hwnd 重启后可能变化，恢复时以 `Key` 为主键；WP3 恢复管线亦按 `Key` 重新定位窗口）。
 
 ```csharp
 public sealed class WindowState
 {
-    /// <summary>窗口唯一组合键："进程名|标题"（见 WindowInfo.Key）。</summary>
+    /// <summary>窗口唯一组合键："进程名|类名"（成员转义后拼接，见 WindowInfo.Key）。</summary>
     public string Key { get; set; } = string.Empty;
 
     /// <summary>hwnd 句柄值的哈希（当前实现取句柄的整数值），仅作运行期辅助匹配。</summary>
@@ -151,6 +160,12 @@ public sealed class AppConfig
     /// <summary>配置文件格式版本，便于将来迁移。</summary>
     public int Version { get; set; } = 1;
 
+    /// <summary>
+    /// 启动时是否自动恢复已保存档案的窗口（置顶 / 透明 / 穿透 / 圆角 / 背景）（WP3）。
+    /// 默认 true；关闭后启动与手动刷新都跳过整个恢复管线，档案仍保留。
+    /// </summary>
+    public bool AutoRestoreOnStartup { get; set; } = true;
+
     /// <summary>各窗口的持久化状态（按 WindowState.Key 唯一）。</summary>
     public List<WindowState> Windows { get; set; } = new();
 }
@@ -161,8 +176,8 @@ public sealed class AppConfig
 ```csharp
 public sealed record WindowInfo(IntPtr Hwnd, string Title, string ClassName, string ProcessName, int ProcessId)
 {
-    /// <summary>「进程名|标题」组合键，与 WindowState.Key 同一规则。</summary>
-    public string Key => $"{ProcessName}|{Title}";
+    /// <summary>「进程名|类名」组合键，成员转义（\ 与 | 转义）防碰撞，与 WindowState.Key 同一规则。</summary>
+    public string Key => $"{Encode(ProcessName)}|{Encode(ClassName)}";
 
     /// <summary>hwnd 句柄值哈希，与 WindowState.HwndHash 同一规则。</summary>
     public long HwndHash => Hwnd.ToInt64();

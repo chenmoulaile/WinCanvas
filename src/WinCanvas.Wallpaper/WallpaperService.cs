@@ -119,6 +119,35 @@ public sealed class WallpaperService : IWallpaperService
         });
     }
 
+    /// <inheritdoc />
+    public bool IsBackgroundActive(IntPtr hwnd, string path)
+    {
+        if (string.IsNullOrEmpty(path))
+            return false;
+
+        // 判重基准统一取完整路径：档案里存的是文件选择器给出的绝对路径，
+        // 各加载器登记的 OriginalPath 是 Path.GetFullPath 规范化后的形式（见 PrepareSource），
+        // 大小写不敏感比较（Windows 路径不区分大小写）。
+        // GetFullPath 失败（非法字符等极端情况）按「未激活」处理——宁可多加载一次，不误判已恢复。
+        string normalized;
+        try
+        {
+            normalized = Path.GetFullPath(path);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        // 只读快照式查询：与 UpdateCoreAsync / CleanupSessionCoreAsync 同用 _gate 短临界区，
+        // 不引入新锁（复用既有会话字典，规格 WP3「用会话字典判重」）。
+        lock (_gate)
+        {
+            return _sessions.TryGetValue(hwnd, out var session)
+                   && string.Equals(session.Source.OriginalPath, normalized, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     /// <summary>单次壁纸更新的完整流程（已由调用方按 hwnd 串行化；在线程池后台线程执行）。</summary>
     private async Task UpdateCoreAsync(IntPtr hwnd, string path)
     {
