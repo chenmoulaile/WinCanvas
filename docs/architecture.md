@@ -246,3 +246,10 @@ flowchart LR
 | user32.dll / dwmapi.dll / kernel32.dll | P/Invoke | 窗口枚举与属性、圆角、显示器信息、LL 键盘钩子 |
 
 配置与缓存路径：`%APPDATA%/WinCanvas/config.json`（UTF-8 无 BOM）；`%LOCALAPPDATA%/WinCanvas/wallpaper-cache/<文件名-hash>/`（pkg 解包缓存）。
+
+## 8. 自动化测试（WP4）
+
+- `tests/WinCanvas.Core.Tests`（36 用例）与 `tests/WinCanvas.Wallpaper.Tests`（48 用例），xUnit + `dotnet test` 全绿；合计 84 例。
+- 覆盖：配置防抖合并 / 原子写 / 无 BOM、窗口档案键语义、`WindowControlService` 失败语义（无效句柄抛 `Win32Exception`）与真实窗口行为冒烟、NumLock 去抖纯逻辑（`NumLockStateDebouncer`）、动态帧率状态机真值表、pkg 加载器纯逻辑（路径安全 / 场景判定 / 封面优先级）、宿主挂接矩形与 DPI 换算纯函数。
+- 被测项目经 `InternalsVisibleTo` 对测试程序集开放 internal 纯逻辑（`SafeJoin` / `DetectComplexScene` / `FindCoverImage` / `WallpaperHostWindow` 矩形函数 / `NumLockStateDebouncer`）；公共 API 面不变。
+- 需要真实桌面会话的用例打 `[Trait("Category", "RequiresWindowsSession")]`，无头环境用 `--filter "Category!=RequiresWindowsSession"` 排除（xunit 2.9.2 无运行时跳过机制，结论见 WORKLOG WP4）。

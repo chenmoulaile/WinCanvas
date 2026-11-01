@@ -54,11 +54,11 @@ public sealed class KeyboardIndicatorService : IDisposable
     private volatile bool _disposed;
 
     /// <summary>
-    /// 已上报的 NumLock 状态：-1 = 未知（未播种），0 = 未锁定，1 = 锁定。
-    /// 状态去抖的核心：与该值相同的事件不上报（抑制按住自动重复的 KEYDOWN 风暴）。
-    /// 各周期的钩子线程共享此字段（Interlocked 交换），跨周期也不重复上报。
+    /// 状态去抖器（WP4 自本类抽离为纯逻辑类型 <see cref="NumLockStateDebouncer"/>）：
+    /// 与上次上报值相同的事件不上报（抑制按住自动重复的 KEYDOWN 风暴）。
+    /// 各周期的钩子线程共享同一实例（Interlocked 原子交换，无锁），跨周期也不重复上报。
     /// </summary>
-    private int _lastReportedState = -1;
+    private readonly NumLockStateDebouncer _debouncer = new();
 
     /// <summary>诊断打点（低频事件：启停 / 状态变化 / 上报失败），供 WORKLOG 验收与问题定位。</summary>
     public event Action<string>? Diagnostics;
@@ -248,7 +248,7 @@ public sealed class KeyboardIndicatorService : IDisposable
             // 播种去抖基线：读当前全局 NumLock 开关位作为「上次上报值」，
             // 使开关开启后的第一次真实翻转必然上报（且不会把「开启前就处于的旧状态」误报为变化）。
             var lockedNow = (NativeMethods.GetKeyState(NativeMethods.VK_NUMLOCK) & 0x0001) != 0;
-            Interlocked.Exchange(ref _lastReportedState, lockedNow ? 1 : 0);
+            _debouncer.Seed(lockedNow);
 
             cycle.Hook = NativeMethods.SetWindowsHookExW(
                 NativeMethods.WH_KEYBOARD_LL, cycle.Proc, NativeMethods.GetModuleHandleW(null), 0);
@@ -329,7 +329,7 @@ public sealed class KeyboardIndicatorService : IDisposable
     }
 
     /// <summary>
-    /// 处理一个 NumLock 键事件：读开关位 → 去抖 → 状态变化才派发线程池上报。
+    /// 处理一个 NumLock 键事件：读开关位 → 去抖（<see cref="_debouncer"/>）→ 状态变化才派发线程池上报。
     ///
     /// 自纠错设计（为什么 KEYDOWN / KEYUP 都读一次）：
     /// 不必依赖系统对 NumLock 开关位的翻转时机（按下时翻 or 抬起时翻）——
@@ -342,10 +342,8 @@ public sealed class KeyboardIndicatorService : IDisposable
     {
         // GetKeyState 的切换位（bit0）是全局会话状态（即 LED 灯态），从钩子线程读即全局现值
         var locked = (NativeMethods.GetKeyState(NativeMethods.VK_NUMLOCK) & 0x0001) != 0;
-        var now = locked ? 1 : 0;
-        var previous = Interlocked.Exchange(ref _lastReportedState, now);
 
-        if (previous == now)
+        if (!_debouncer.OnSample(locked))
         {
             // 重复状态事件（按住自动重复 / 同一翻转的另一时机读到同值）：仅节流打点，不上报
             LogThrottled($"NumLock 重复状态事件已抑制（locked={locked}，vk=0x{kb.vkCode:X2}）");

@@ -229,8 +229,10 @@ public static class PkgWallpaperLoader
 
     /// <summary>
     /// 把 pkg 条目相对路径安全拼到缓存目录下：拒绝绝对路径与 ".." 穿越。
+    /// （WP4：由 private 放宽为 internal——纯路径逻辑按总提示词用例表要求可单测，
+    /// 经 InternalsVisibleTo 对 WinCanvas.Wallpaper.Tests 开放，不进公共 API。）
     /// </summary>
-    private static string? SafeJoin(string root, string entryPath)
+    internal static string? SafeJoin(string root, string entryPath)
     {
         if (string.IsNullOrWhiteSpace(entryPath))
             return null;
@@ -260,8 +262,10 @@ public static class PkgWallpaperLoader
     /// <summary>
     /// 判定是否为复杂 SceneScript 场景：
     /// 包内存在 .lua 脚本，或 scene.json 中引用了 "script" / "scripts" 字段。
+    /// （WP4：由 private 放宽为 internal——三分支判定为纯目录/文本逻辑，按总提示词
+    /// 用例表要求以临时目录构造直接单测，经 InternalsVisibleTo 对测试程序集开放。）
     /// </summary>
-    private static bool DetectComplexScene(string extractRoot, string? sceneJsonPath)
+    internal static bool DetectComplexScene(string extractRoot, string? sceneJsonPath)
     {
         // 条件一：存在 .lua 用户脚本
         if (Directory.EnumerateFiles(extractRoot, "*.lua", SearchOption.AllDirectories).Any())
@@ -292,8 +296,10 @@ public static class PkgWallpaperLoader
 
     /// <summary>
     /// 找封面图：优先包根的 preview.jpg / preview.png / preview_gif*，其次任一张已解码 PNG。
+    /// （WP4：由 private 放宽为 internal——候选优先级为纯文件枚举逻辑，按总提示词
+    /// 用例表要求以临时目录构造直接单测，经 InternalsVisibleTo 对测试程序集开放。）
     /// </summary>
-    private static string? FindCoverImage(string extractRoot)
+    internal static string? FindCoverImage(string extractRoot)
     {
         var candidates = new[]
         {

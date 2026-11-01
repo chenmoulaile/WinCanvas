@@ -19,6 +19,10 @@
     <!-- 内部类型对 App 层开放（WP1-B：WallpaperPreviewController 使用下沉到本项目的
          共享像素快照工具 BitmapSnapshot / BgraSnapshot，规格 B.3 要求预览与宿主共用一份逻辑） -->
     <InternalsVisibleTo Include="WinCanvas.App" />
+    <!-- 内部类型对测试程序集开放（WP4）：WallpaperHostWindow 为 internal（服务层专用宿主抽象），
+         但其挂接矩形 / DPI 换算纯函数与 PkgWallpaperLoader 的 SafeJoin / DetectComplexScene /
+         FindCoverImage 纯逻辑均按总提示词 WP4 用例表要求可单测——保持 internal 不进公共 API。 -->
+    <InternalsVisibleTo Include="WinCanvas.Wallpaper.Tests" />
   </ItemGroup>
 
   <ItemGroup>

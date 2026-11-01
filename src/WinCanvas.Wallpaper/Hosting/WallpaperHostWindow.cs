@@ -126,6 +126,14 @@ internal sealed class WallpaperHostWindow : IDisposable
     /// 与宿主同生命周期；尺寸变化回调（SyncEmbedClientSize / SyncFollowBounds）也在 pump 线程直呼。</summary>
     private WallpaperHostRenderer? _renderer;
 
+    /// <summary>
+    /// A2 宿主当前生效的每显示器 DPI（pump 线程内读写；WP4 引入，仅 A2 路径维护——
+    /// A1 宿主是目标的 WS_CHILD，位置/尺寸由目标控制，系统不向其发送 WM_DPICHANGED）。
+    /// 创建完成时经 <see cref="HostNativeMethods.GetDpiForWindow"/> 播种；
+    /// 收到 WM_DPICHANGED 时以旧值换算期望客户区（<see cref="ComputeDpiScaledSize"/>）并刷新为新值。
+    /// </summary>
+    private uint _currentDpi;
+
     /// <summary>视频组合呈现器（WP1-C，pump 线程内读写）：视频会话经 BeginVideo 惰性创建，
     /// EndVideo / Dispose 释放；与 DComp 渲染器各持各的合成目标，按壁纸类型互斥生效。</summary>
     private CompositionVideoPresenter? _videoPresenter;
@@ -524,6 +532,7 @@ internal sealed class WallpaperHostWindow : IDisposable
 
         _hwnd = hwnd;
         _mode = HostAttachMode.Follow;
+        _currentDpi = HostNativeMethods.GetDpiForWindow(hwnd); // 播种 DPI 基准（WM_DPICHANGED 换算用，见字段注释）
         LogRectComparison("A2 建立完成");
         error = null;
         return true;
@@ -888,6 +897,29 @@ internal sealed class WallpaperHostWindow : IDisposable
     }
 
     /// <summary>
+    /// 【纯函数】DPI 缩放换算（WP4）：旧 DPI 下的像素尺寸 → 新 DPI 下的期望像素尺寸（四舍五入）。
+    /// A2 宿主跨屏（PerMonitorV2）时收到 WM_DPICHANGED：系统对窗口矩形给出建议值，
+    /// 而渲染表面 / 视频布局只按客户区宽高走——用本函数算出「期望客户区」，与
+    /// DefWindowProcW 后实际读到的客户区比对，偏差即说明目标/系统侧参与了尺寸控制（诊断打点）。
+    /// 语义：物理像素尺寸与 DPI 成正比（96 DPI = 100%），换算式 = round(旧尺寸 × 新DPI / 旧DPI)；
+    /// 四舍五入而非取整，避免 125%/150% 档位连续换算时误差单向累积。
+    /// </summary>
+    /// <param name="width">旧 DPI 下的像素宽（非负）。</param>
+    /// <param name="height">旧 DPI 下的像素高（非负）。</param>
+    /// <param name="oldDpi">旧 DPI（96 = 100%）。</param>
+    /// <param name="newDpi">新 DPI（96 = 100%）。</param>
+    /// <returns>新 DPI 下的期望（宽, 高）；任一 DPI 非正值时原样返回（防御：换算无意义）。</returns>
+    public static (int Width, int Height) ComputeDpiScaledSize(int width, int height, uint oldDpi, uint newDpi)
+    {
+        if (oldDpi == 0 || newDpi == 0)
+            return (width, height);
+
+        return (
+            (int) Math.Round(width * (double) newDpi / oldDpi),
+            (int) Math.Round(height * (double) newDpi / oldDpi));
+    }
+
+    /// <summary>
     /// 读目标外接矩形：优先 DWMWA_EXTENDED_FRAME_BOUNDS（DWM 实际可视框，排除阴影边距），
     /// 失败回退 GetWindowRect。两者都是屏幕物理像素坐标，可直接互为回退。
     /// </summary>
@@ -968,13 +1000,36 @@ internal sealed class WallpaperHostWindow : IDisposable
                     // 服务层据此重缩放图片（新显示器分辨率）、视频重算加边布局。A1 宿主是目标的
                     // WS_CHILD，位置/尺寸由目标控制，系统不向其发送 WM_DPICHANGED，无需处理。
                     {
+                        if (instance2 == null)
+                            return HostNativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
+
+                        // 换算基准：改动前的客户区尺寸与旧 DPI（DefWindowProcW 会按建议矩形改窗口，
+                        // 旧客户区尺寸必须先读）。DPI 基准为 0 说明创建播种未走到（异常路径），跳过比对。
+                        if (!HostNativeMethods.GetClientRect(hwnd, out var oldClient))
+                            return HostNativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
+                        var oldW = oldClient.Right - oldClient.Left;
+                        var oldH = oldClient.Bottom - oldClient.Top;
+
+                        // wParam 布局：LOWORD = X 轴新 DPI，HIWORD = Y 轴新 DPI（两轴恒相等，取 X）。
+                        var newDpi = (uint) (wParam.ToInt64() & 0xFFFF);
+
+                        // 纯函数换算期望客户区（WP4 用例表「DPI 缩放换算」的被测逻辑）：
+                        // DefWindowProcW 后与实际读值比对并打点——偏差说明目标侧/系统侧参与了尺寸控制，
+                        // 渲染表面始终按实际读值重建，此比对仅作诊断，不改变行为。
+                        var expected = ComputeDpiScaledSize(oldW, oldH, instance2._currentDpi, newDpi);
+
                         var dpiResult = HostNativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
-                        if (instance2 != null && HostNativeMethods.GetClientRect(hwnd, out var dpiClient))
+
+                        if (HostNativeMethods.GetClientRect(hwnd, out var dpiClient))
                         {
-                            instance2.ClientSizeChanged?.Invoke(
-                                instance2.TargetHwnd,
-                                dpiClient.Right - dpiClient.Left,
-                                dpiClient.Bottom - dpiClient.Top);
+                            var newW = dpiClient.Right - dpiClient.Left;
+                            var newH = dpiClient.Bottom - dpiClient.Top;
+                            HostDiagnostics.LogFollow(
+                                $"A2 DPI 变更 {instance2._currentDpi}→{newDpi} 期望客户区={expected.Width}x{expected.Height} " +
+                                $"实际客户区={newW}x{newH} 一致={(expected.Width == newW && expected.Height == newH)}");
+                            instance2._currentDpi = newDpi; // 刷新 DPI 基准（pump 线程内，串行无竞争）
+
+                            instance2.ClientSizeChanged?.Invoke(instance2.TargetHwnd, newW, newH);
                         }
 
                         return dpiResult;

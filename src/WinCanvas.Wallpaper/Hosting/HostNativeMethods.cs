@@ -653,6 +653,17 @@ internal static class HostNativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
+    /// <summary>
+    /// 取窗口当前生效的每显示器 DPI（PerMonitorV2 感知进程下随窗口所在显示器变化）。
+    /// WP4 引入：A2 宿主为独立顶层窗口，跨屏移动收到 WM_DPICHANGED 时需要「旧 DPI」作换算
+    /// 基准——创建完成时读一次存入 <c>WallpaperHostWindow._currentDpi</c>，此后每次收到
+    /// WM_DPICHANGED 用旧值换算期望客户区、再用新值刷新该字段（读写均在 pump 线程）。
+    /// </summary>
+    /// <param name="hWnd">目标窗口（须属本进程；A2 宿主满足）。</param>
+    /// <returns>当前 DPI（96 = 100% 缩放；失败返回系统 DPI 兜底值，本路径仅做诊断比对，不另设错误分支）。</returns>
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForWindow(IntPtr hWnd);
+
     // ===== pump 线程消息循环 =====
 
     /// <summary>

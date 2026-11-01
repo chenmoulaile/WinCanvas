@@ -98,7 +98,13 @@ dotnet build WinCanvas.sln -c Debug
 # 产物位于 src/WinCanvas.App/bin/x64/Debug/net8.0-windows10.0.19041.0/win-x64/WinCanvas.App.exe
 ```
 
-> 验证手段：`dotnet build WinCanvas.sln`（0 error 为过）+ `dotnet test`（xUnit 测试，当前覆盖窗口档案键语义等核心模型，见 `tests/`）。
+> 验证手段：`dotnet build WinCanvas.sln`（0 error 为过）+ `dotnet test`（xUnit，两个测试项目共 84 个用例，见 `tests/`）：
+> - `tests/WinCanvas.Core.Tests`：配置持久化（防抖合并 / 原子写 / 无 BOM）、窗口档案键语义、
+>   `WindowControlService` 失败语义（无效句柄抛 `Win32Exception`）与真实窗口行为冒烟、NumLock 去抖纯逻辑；
+> - `tests/WinCanvas.Wallpaper.Tests`：动态帧率状态机真值表、pkg 加载器纯逻辑（路径安全 / 场景判定 / 封面优先级）、
+>   宿主挂接矩形与 DPI 换算纯函数。
+>   需要真实桌面会话的用例打 `[Trait("Category", "RequiresWindowsSession")]`，无头环境用
+>   `dotnet test --filter "Category!=RequiresWindowsSession"` 排除（不判失败）。
 
 ## 使用说明
 

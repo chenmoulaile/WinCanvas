@@ -525,9 +525,65 @@
 
 **禁止事项自查**：未在 UI 线程同步串行执行全部恢复（后台管线 + 逐个封送，UI 线程仅毫秒级属性片）；未为恢复管线新增独立锁体系（判重=会话账本 ConcurrentDictionary 原子操作 + 壁纸会话字典查询，串行=任务链；`_updateGates`/`_gate`/`_tickGate`/配置防抖一分未动）；未绕过任何既有并发语义；文档未宣称代码未实现的能力。
 
-## 5. WP4 自动化测试工程（待开始）
+## 5. WP4 自动化测试工程（2026-11-01）
 
-> 预留区块：Wallpaper 测试项目 + 用例表全量实现。完成后按同一结构补录。
+**状态**：完成。提交：`feat(WP4): 自动化测试工程`（分支 `feat/complete-w0-w5`）。
+
+**测试总数**：**84 个用例全绿**（`WinCanvas.Core.Tests` 36 + `WinCanvas.Wallpaper.Tests` 48；WP0 基线 6 → 新增 78）。其中 3 个打 `[Trait("Category", "RequiresWindowsSession")]`（真实 Win32 窗口行为冒烟），本机桌面会话下实跑通过。
+
+#### 改动清单
+
+| 文件 | 变更 | 说明 |
+| --- | --- | --- |
+| `tests/WinCanvas.Wallpaper.Tests/`（新项目） | 新增 | TFM 与被测项目一致（net8.0-windows10.0.19041.0）；xunit 2.9.2 测试栈与 Core.Tests 同版本（NuGet 缓存已有，零新网络依赖）；已入 sln |
+| `tests/WinCanvas.Wallpaper.Tests/DynamicFrameRateControllerTests.cs` | 新增 | 状态真值表（2×2×2 全组合 Theory）、两种暂停态 `ShouldRender=false`、Set 同值不触发事件、迁移事件携带正确新态、三档帧间隔 |
+| `tests/WinCanvas.Wallpaper.Tests/PkgWallpaperLoaderPureLogicTests.cs` | 新增 | `SafeJoin`（盘符绝对路径/`..` 穿越/空白拒绝，正常相对路径收编）；`DetectComplexScene` 三分支（.lua / scene.json 含 "script"/"scripts" / 正常包 + scene.json 读取失败防御分支）；`FindCoverImage` 优先级（preview.jpg > preview.png > 任意 PNG > null） |
+| `tests/WinCanvas.Wallpaper.Tests/WallpaperHostRectTests.cs` | 新增 | A1/A2 挂接矩形纯函数、`RectsEqual`、`ComputeDpiScaledSize`（96↔120↔144↔192 档位、非整除舍入口径、DPI=0 防御分支） |
+| `tests/WinCanvas.Core.Tests/ConfigurationServiceTests.cs` | 新增 | 首次无文件→默认；损坏 JSON→默认不抛；**10 次快速 Update 防抖合并为恰好 1 次落盘**（防抖窗口内不落盘 + FSW 事件突发计数，见决策 4）；Flush 后合法 JSON 且**无 BOM**；写盘原子（无 `.tmp` 残留）；并发 Update+Flush 无异常；防抖间隔非正值构造即抛 |
+| `tests/WinCanvas.Core.Tests/NumLockStateDebouncerTests.cs` | 新增 | 去抖纯逻辑：同状态连续事件只上报一次、真实翻转恰一次、未播种首采样上报、Seed 抑制旧状态误报、`LastReportedState` 语义 |
+| `tests/WinCanvas.Core.Tests/WindowControlServiceFailureTests.cs` | 新增 | `IntPtr.Zero` 失败语义：Toggle/SetTopmost/SetTransparency/EnableClickThrough(true)/SetRoundedCorners/SetCornerPreference 均抛 `Win32Exception` 且错误码非 0；两个按设计幂等短路路径（GetIsTopmost 读 false、EnableClickThrough(false) 空操作）单独钉住并注释 |
+| `tests/WinCanvas.Core.Tests/WindowControlServiceRealWindowTests.cs` | 新增 | 【RequiresWindowsSession】测试进程内自建真实 Win32 窗口（专用 STA 线程 + 消息泵，见决策 6）：置顶置位/回读往返、透明度写入不抛、穿透开关样式语义（关穿透保留 LAYERED） |
+| `tests/WinCanvas.Core.Tests/WindowStateKeyTests.cs` | 新增 | Key 组合稳定性（句柄变化 Key 不变/重复枚举恒等/转义可逆性）、HwndHash 与 Key 语义区分（不同句柄同 Key、Key 不含句柄值）、WindowState 档案往返 |
+| `src/WinCanvas.Core/Services/NumLockStateDebouncer.cs` | 新增 | 自 KeyboardIndicatorService 抽离的去抖纯逻辑（决策 2） |
+| `src/WinCanvas.Core/Services/KeyboardIndicatorService.cs` | 修改 | `_lastReportedState` 字段 + 内联 Interlocked 序替换为 `_debouncer`（NumLockStateDebouncer）；播种改 `Seed()`；回调改 `OnSample()`——锁语义与共享口径（跨周期共享、Interlocked 无锁）原样保留 |
+| `src/WinCanvas.Core/Services/ConfigurationService.cs` | 修改 | 防抖间隔抽为实例字段 `_debounceDelay`：新增 `(string, TimeSpan)` 构造注入（非正值立即抛）；原两个构造链式传入默认 500ms——生产行为不变，测试可注入缩短（决策 1） |
+| `src/WinCanvas.Wallpaper/Loaders/PkgWallpaperLoader.cs` | 修改 | `SafeJoin` / `DetectComplexScene` / `FindCoverImage` 由 private 放宽为 internal（纯逻辑按用例表可单测；不进公共 API，经 InternalsVisibleTo 对测试程序集开放） |
+| `src/WinCanvas.Wallpaper/Hosting/WallpaperHostWindow.cs` | 修改 | 新增纯函数 `ComputeDpiScaledSize`（DPI 缩放换算）并接入 WM_DPICHANGED 路径：改动前客户区 + 新 DPI → 期望客户区，与 DefWindowProcW 后实际读值比对打点（偏差=目标/系统侧参与尺寸控制，仅诊断不改行为）；新增 `_currentDpi` 字段（pump 线程读写，A2 创建时播种） |
+| `src/WinCanvas.Wallpaper/Hosting/HostNativeMethods.cs` | 修改 | 新增 `GetDpiForWindow` P/Invoke（注释达 NativeMethods 规格：作用/参数/返回值/失败语义） |
+| `src/WinCanvas.Core/WinCanvas.Core.csproj`、`src/WinCanvas.Wallpaper/WinCanvas.Wallpaper.csproj` | 修改 | `<InternalsVisibleTo>` 增加各自测试程序集（总提示词 WP4 结构要求） |
+| `WinCanvas.sln` | 修改 | WinCanvas.Wallpaper.Tests 入 sln（tests 解决方案文件夹内） |
+| `README.md` | 修改 | 验证手段表述更新为真实测试说明（两项目 84 用例 + RequiresWindowsSession 过滤口径），替代 WP0 的临时描述 |
+| `.gitignore` | 修改 | 增加 `TestResults/`（blame 转储与测试序列等运行产物不入库） |
+
+#### 关键决策与理由
+
+1. **配置防抖间隔改为构造可注入**：用例表要求「10 次快速 Update 防抖合并后磁盘只落盘 1 次（DebounceDelay 经构造参数可注入缩短）」。原实现是 `static readonly` 500ms——改为实例字段 + 新构造重载，原构造链式传默认值，生产行为零变化；测试以 120ms 注入把验证从 500ms 级等待压到亚秒级。
+2. **NumLock 去抖抽离为纯逻辑类型**：去抖语义原内联在钩子回调（Interlocked 交换 `_lastReportedState`），无法在无钩子线程/无真实键盘下单测。抽离为 internal `NumLockStateDebouncer`（`Seed`/`OnSample`/`LastReportedState`），钩子回调瘦身为「读开关位 → 喂去抖器」；`_lastReportedState` 的共享语义（跨周期共享、Interlocked 无锁、volatile 读）原样迁入——只可扩展不可绕过的既有锁语义零改动。
+3. **WallpaperHostWindow 新增 DPI 纯函数并接入真实路径**：用例表要求「DPI 缩放换算」，但原 WM_DPICHANGED 处理无换算逻辑可测。选择「纯函数 + 真实接线」而非空挂测试桩：`ComputeDpiScaledSize` 在 WM_DPICHANGED 中算期望客户区与实际读值比对打点（诊断用途），保证被测代码就是生产代码。
+4. **「防抖合并只落盘 1 次」的观测口径**：磁盘写盘次数无法直接计数，采用 FileSystemWatcher 事件**突发归并**（相邻事件间隔 <80ms 计 1 次落盘）——一次「写临时文件 + Move 覆盖」会连发多个事件，逐事件计数会重复。配套断言：防抖窗口内文件不存在（排除逐次立即写）+ 最终内容为最后一批值（最后状态胜出）。
+5. **xunit 2.9.2 无运行时跳过机制（探针实测）**：`Assert.Skip` 不存在（编译期被解析为 LINQ `Enumerable.Skip` 报 CS0411），v2 无 SkipException 公共 API。故 RequiresWindowsSession 用例的无头排除口径 = `--filter "Category!=RequiresWindowsSession"`（Trait 过滤），桌面会话异常时构造函数以明确中文原因失败，绝不静默假通过。
+6. **真实窗口测试的线程模型（本 WP 最大的踩坑，探针逐层定位）**：
+   - **现象**：真实窗口用例下 testhost 全部「进程崩溃」。
+   - **定位链**：独立控制台探针复现 → `SetTopmostAsync` 对**建在线程池线程上的测试窗口**永久挂起（exit=124）→ 根因：`SetWindowPos` 会对窗口**所属线程**发同步消息（WM_WINDOWPOSCHANGING 等），线程池线程不泵消息 → 同步消息永无回应 → 死锁。挂起的测试被 VSTest 判为宿主崩溃。
+   - **修复**：窗口改在**专用 STA 线程**创建并跑 GetMessageW 消息泵；Dispose 用 WM_CLOSE（DefWindowProcW 默认转 DestroyWindow，在所属线程上执行，合法）+ Join 收尾。
+   - **连带发现 1**：隐藏窗口的 WS_EX_TOPMOST 位与 SetLayeredWindowAttributes 均不生效（Win32 已知语义）→ 窗口必须真实显示。
+   - **连带发现 2**：`WS_EX_NOACTIVATE` 样式窗口的 `SetWindowPos(HWND_TOPMOST)` **不落 WS_EX_TOPMOST 位**（四形态对照探针实证：泵+NOACTIVATE 两种显示方式均 False，泵+普通显示 True）→ 测试窗口弃用 NOACTIVATE 样式，防抢焦点由 SWP_NOACTIVATE 承担。此语义对未来宿主/窗口工具开发有直接参考价值。
+   - **连带发现 3**：C# 不允许把 extern（DllImport）方法组直接转成委托（最小复现编译报 CS0103），委托创建须经托管包装方法。
+   - **连带发现 4**：托管方法名与 Win32 导出名不同处必须显式 `EntryPoint`——缺失时 EntryPointNotFoundException 从 Dispose/线程体逃逸会击穿测试宿主（早前「崩溃」的另一来源）。
+7. **失败语义用例的边界诚实**：用例表说「对 IntPtr.Zero 操作各 API 抛 Win32Exception」，但 `GetIsTopmostAsync`（纯读取，无失败语义可上抛）与 `EnableClickThroughAsync(false)`（新旧样式相等按幂等设计短路）**按设计不抛**——各以独立用例钉住现状并注释设计理由，不为了凑表改成「无效句柄也报错」（那会改变生产行为）。
+8. **SafeJoin 的 UNC 形态语义钉住现状**：`\\evil\share\x` 经 Normalize 后被当普通相对段**收编**进根目录内（结果安全、非拒绝）——以独立用例记录该实现口径，注释明确「钉住现状，非缺陷」。
+9. **测试项目零新增 NuGet 版本**：与 WP0 确立的口径一致，完全复用本机 NuGet 缓存中的 xunit 2.9.2 / Test.Sdk 17.11.1 / runner 2.8.2，零网络依赖。
+
+#### 验证证据摘要
+
+- **进入前基线自检**：`dotnet build WinCanvas.sln -c Debug`（增量）= 0 错误；`dotnet test --no-build` = 6/6 通过。
+- **构建门禁**：`dotnet clean WinCanvas.sln -c Debug` → `dotnet build WinCanvas.sln -c Debug` = **0 错误 / 26 警告**（= WP0 基线 26，未新增；含新测试项目与全部 P/Invoke 增量）。
+- **测试门禁**：`dotnet test WinCanvas.sln -c Debug --no-build` = **84/84 通过**（Core.Tests 36 + Wallpaper.Tests 48，0 失败 0 跳过）。
+- **用例表逐行核对**：ConfigurationService（7 用例）/ DynamicFrameRateController（真值表 8 组合 + 6 用例）/ PkgWallpaperLoader 纯逻辑（17 断言点）/ WindowControlService 失败语义（9）+ 真实窗口（3）/ WindowState·WindowInfo（5）/ WallpaperHostWindow 矩形与 DPI（10）/ NumLockStateDebouncer（5）——上表 7 行全部有对应测试且通过。
+- **真实窗口用例本机实跑**：`dotnet test --filter "Category=RequiresWindowsSession"` 通过（桌面会话可用）；无头环境的排除口径已写入 README。
+- **过程探针**：全部结论以一次性控制台探针取得（入口点缺失、挂起根因、TOPMOST 四形态对照、extern 方法组委托限制），探针目录已删除、结论沉淀于本区块决策 5/6，未留任何临时文件入库。
+
+**DoD 自检**：上表每行用例均有对应测试且通过 ✅；`dotnet test` 全绿 ✅；两测试项目均入 sln ✅；clean 全量构建 0 error 且 warning = 基线 26 ✅；WORKLOG 记录测试总数（84）✅；README 无自动化测试表述已更新为真实说明 ✅。
 
 ## 6. WP5 质量打磨与文档收口（待开始）
 

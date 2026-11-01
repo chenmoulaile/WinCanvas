@@ -15,6 +15,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WinCanvas.Core.Tests", "tests\WinCanvas.Core.Tests\WinCanvas.Core.Tests.csproj", "{8BE2FA58-9F0B-4E38-B57F-04C9ECF69537}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WinCanvas.Wallpaper.Tests", "tests\WinCanvas.Wallpaper.Tests\WinCanvas.Wallpaper.Tests.csproj", "{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -73,6 +75,18 @@ Global
 		{8BE2FA58-9F0B-4E38-B57F-04C9ECF69537}.Release|x64.Build.0 = Release|Any CPU
 		{8BE2FA58-9F0B-4E38-B57F-04C9ECF69537}.Release|x86.ActiveCfg = Release|Any CPU
 		{8BE2FA58-9F0B-4E38-B57F-04C9ECF69537}.Release|x86.Build.0 = Release|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Debug|x64.Build.0 = Debug|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Debug|x86.Build.0 = Debug|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Release|x64.ActiveCfg = Release|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Release|x64.Build.0 = Release|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Release|x86.ActiveCfg = Release|Any CPU
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -82,5 +96,6 @@ Global
 		{772458F9-F97C-4F87-9E02-F89A0B0BFF35} = {CC3B93A2-E7DC-4620-A79A-1589ABCC1777}
 		{1F896BA8-3074-4011-B8A2-85558D37242E} = {CC3B93A2-E7DC-4620-A79A-1589ABCC1777}
 		{8BE2FA58-9F0B-4E38-B57F-04C9ECF69537} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{4E05F47F-EA6F-412D-B5C0-0E20F5891A25} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

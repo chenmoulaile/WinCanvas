@@ -473,6 +473,7 @@ public sealed record WallpaperSource : IDisposable
 - 首次运行文件不存在 → 返回默认配置；JSON 损坏（`JsonException`）→ 回退默认配置，不崩溃。
 - `Update` 后 500ms 防抖合并写盘；应用退出时 `MainWindow.Closed` 调同步的 `Flush()` 强制落盘（消息循环即将退出，异步续延可能没有机会执行）。
 - `ConfigurationService(string configFilePath)` 构造可注入路径（测试用）；`ConfigFilePath` 属性供诊断。
+- `ConfigurationService(string configFilePath, TimeSpan debounceDelay)` 构造可同时注入防抖间隔（WP4，测试用；非正值抛 `ArgumentOutOfRangeException`），生产构造固定 500ms。
 
 ## 6. 命令行 / 自动化入口
 
