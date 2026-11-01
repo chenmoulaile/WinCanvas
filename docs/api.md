@@ -260,11 +260,41 @@ public sealed class WinTipsIntegrationService : IStatusNotifier
 
     public WinTipsIntegrationService(string? explicitExePath = null);
 
-    // 接口成员：ShowNumLockStatus(bool isLocked) —— 当前无调用方（键盘钩子未实现）
+    // 接口成员：ShowNumLockStatus(bool isLocked) —— 调用方 = Core 的 KeyboardIndicatorService（WP2）
 }
 ```
 
-### 3.5 DynamicFrameRateController（src/WinCanvas.Wallpaper/Rendering/DynamicFrameRateController.cs）
+### 3.5 KeyboardIndicatorService（src/WinCanvas.Core/Services/KeyboardIndicatorService.cs，WP2 新增）
+
+NumLock LL 键盘钩子服务：专用消息线程安装/回调/卸载，状态变化去抖后经线程池上报 `IStatusNotifier`。
+
+```csharp
+public sealed class KeyboardIndicatorService : IDisposable
+{
+    /// <summary>诊断打点（安装/状态变化/去抖抑制/Unhook 完成），同时落
+    /// %LOCALAPPDATA%/WinCanvas/logs/keyboard-diag.log。触发线程 = 钩子线程 / 线程池。</summary>
+    public event Action<string>? Diagnostics;
+
+    /// <summary>钩子当前是否已安装（跨周期真实口径；Stop 后钩子线程收尾完成前仍可为 true）。</summary>
+    public bool IsHookInstalled { get; }
+
+    /// <param name="notifier">上报目标（组合根注入 WinTipsIntegrationService）。</param>
+    public KeyboardIndicatorService(IStatusNotifier notifier);
+
+    /// <summary>启动监听（幂等）。只做托管线程创建，钩子安装发生在专用线程内部——UI 线程零 P/Invoke。</summary>
+    public void Start();
+
+    /// <summary>停止监听（幂等）。投递 WM_QUIT 与 Join 派发线程池，调用方立即返回。</summary>
+    public void Stop();
+
+    /// <summary>显式同步卸钩（有界等待），应用退出时由 MainWindow.Closed 调用。</summary>
+    public void Dispose();
+}
+```
+
+配套 P/Invoke（`src/WinCanvas.Core/Native/NativeMethods.cs`，注释规格同既有条目）：`SetWindowsHookExW` / `UnhookWindowsHookEx` / `CallNextHookEx` / `GetKeyState` / `PostThreadMessageW` / `GetMessageW` / `PeekMessageW` / `GetModuleHandleW` / `GetCurrentThreadId`，常量 `WH_KEYBOARD_LL(13)` / `VK_NUMLOCK(0x90)` / `WM_KEYDOWN(0x0100)` / `WM_KEYUP(0x0101)` / `WM_QUIT(0x0012)` / `HC_ACTION(0)` / `LLKHF_INJECTED(0x10)`，类型 `LowLevelKeyboardProc` / `KBDLLHOOKSTRUCT` / `MSG` / `POINT`。
+
+### 3.6 DynamicFrameRateController（src/WinCanvas.Wallpaper/Rendering/DynamicFrameRateController.cs）
 
 纯状态机，不持有线程资源。三档策略：窗口激活 60fps / 非激活 15fps / 全屏前台或用户暂停完全暂停。
 
@@ -287,7 +317,7 @@ public sealed class DynamicFrameRateController
 }
 ```
 
-### 3.6 WallpaperRenderLoop（src/WinCanvas.Wallpaper/Rendering/WallpaperRenderLoop.cs）
+### 3.7 WallpaperRenderLoop（src/WinCanvas.Wallpaper/Rendering/WallpaperRenderLoop.cs）
 
 壁纸专用后台渲染线程（线程名 `WinCanvas.Wallpaper.Render`，IsBackground、BelowNormal 优先级）。
 
@@ -309,7 +339,7 @@ public sealed class WallpaperRenderLoop : IDisposable
 }
 ```
 
-### 3.7 加载器（src/WinCanvas.Wallpaper/Loaders/）
+### 3.8 加载器（src/WinCanvas.Wallpaper/Loaders/）
 
 ```csharp
 // ImageWallpaperLoader：第一层静态图片（.jpg/.jpeg/.png/.bmp/.gif），GIF 取第一帧
@@ -329,7 +359,7 @@ public static WallpaperSource Load(string pkgPath);
 // 抛 FileNotFoundException（文件不存在）/ InvalidDataException（pkg 头魔数不合法）
 ```
 
-### 3.8 模型
+### 3.9 模型
 
 ```csharp
 /// <summary>背景资源的实际类型（三层策略的判定结果）。</summary>
@@ -364,7 +394,7 @@ public sealed record WallpaperSource : IDisposable
 
 完整签名与逐条中文注释见源码：`WinCanvas.Core/Native/NativeMethods.cs`（内部类）与 `WinCanvas.Wallpaper/Native/WallpaperNativeMethods.cs`（内部类）。清单如下：
 
-### NativeMethods（user32 / dwmapi）
+### NativeMethods（user32 / dwmapi / kernel32）
 
 | API | 用途 | 关键返回值 |
 | --- | --- | --- |
@@ -378,6 +408,13 @@ public sealed record WallpaperSource : IDisposable
 | `SetLayeredWindowAttributes(..., LWA_ALPHA)` | 整体 alpha 透明 | false = 失败 |
 | `GetWindowLongPtrCompat / SetWindowLongPtrCompat` | 32/64 位兼容的 GWL_EXSTYLE 读写 | 旧值；0 需结合 GetLastError 判断 |
 | `DwmGetWindowAttribute / DwmSetWindowAttribute` | DWM 属性读写（圆角 = 33） | HRESULT，负值为错误 |
+| `SetWindowsHookExW(WH_KEYBOARD_LL, proc, hMod, 0)` | 安装 LL 键盘钩子（WP2，须由带消息循环的专用线程调用） | IntPtr.Zero = 失败（GetLastError） |
+| `UnhookWindowsHookEx(IntPtr)` | 卸载钩子（WP2，钩子线程收尾时调用） | false = 失败 |
+| `CallNextHookEx(...)` | 钩子链放行（WP2，回调无条件调用，绝不吞键） | 下一钩子的返回值 |
+| `GetKeyState(int)` | 读虚拟键同步状态（WP2，切换位 bit0 为全局会话状态） | bit0=1 表示 NumLock 锁定 |
+| `PostThreadMessageW(uint, uint, IntPtr, IntPtr)` | 向钩子线程投递 WM_QUIT（WP2 停止流程） | false = 失败 |
+| `GetMessageW / PeekMessageW` | 钩子线程消息循环 / 建队（WP2） | 0 = WM_QUIT 退出循环 |
+| `GetModuleHandleW / GetCurrentThreadId` | 取主模块句柄（hMod）/ 钩子线程 Id（WP2） | 句柄 / 线程 Id |
 
 ### WallpaperNativeMethods（user32）
 

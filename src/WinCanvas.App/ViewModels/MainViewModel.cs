@@ -433,12 +433,19 @@ public partial class MainViewModel : ObservableObject
 
     partial void OnWinTipsEnabledChanged(bool value)
     {
-        // 开关直接控制 WinTipsIntegrationService 是否对外弹出提示
-        //（开启且找到 WinTips.exe 时进程调用其 CLI 浮窗，否则走本地回退事件）
+        // 开关同时控制两件事（WP2）：
+        // 1) WinTipsIntegrationService.IsEnabled —— 浮窗 / 本地回退事件是否对外呈现；
+        // 2) NumLock LL 键盘钩子启停 —— 开→Start() 装钩，关→Stop() 卸钩。
+        // Start/Stop 内部把建线程、装/卸钩、投递全部派发线程池，UI 线程零 P/Invoke、零阻塞；
+        // 钩子侧只上报「状态变化」（去抖），重复状态不会产生提示风暴。
         _services.WinTips.IsEnabled = value;
+        if (value)
+            _services.KeyboardIndicator.Start();
+        else
+            _services.KeyboardIndicator.Stop();
         ShowInfo(InfoBarSeverity.Informational, value
-            ? "WinTips 提示已开启：收到 NumLock 状态变化时将在此显示提示。"
-            : "WinTips 提示已关闭。");
+            ? "WinTips 提示已开启：NumLock 钩子安装中，按下 NumLock 后将弹出浮窗（未部署 WinTips.exe 时在此回退提示）。"
+            : "WinTips 提示已关闭：NumLock 钩子已卸载，按键不再产生任何提示。");
     }
 
     partial void OnFpsOverlayEnabledChanged(bool value)

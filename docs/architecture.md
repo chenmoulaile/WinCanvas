@@ -19,7 +19,8 @@ graph TB
         CFG["IConfigurationService<br/>ConfigurationService<br/>config.json 防抖落盘"]
         IF1["IWallpaperService（接口）"]
         IF2["IStatusNotifier（接口）"]
-        NM["NativeMethods<br/>user32 / dwmapi P/Invoke"]
+        KIS["KeyboardIndicatorService<br/>NumLock LL 键盘钩子<br/>专用消息线程 + 状态去抖"]
+        NM["NativeMethods<br/>user32 / dwmapi / kernel32 P/Invoke"]
     end
 
     subgraph WP["渲染与解析层 WinCanvas.Wallpaper"]
@@ -35,7 +36,7 @@ graph TB
 
     subgraph TP["ThirdParty（git 子模块）"]
         REPKG["repkg v0.4.0-alpha<br/>RePKG.Core + RePKG.Application<br/>pkg/tex 解析（源码项目引用）"]
-        WTIPS["WinTips.exe<br/>net10.0-windows WPF 浮窗<br/>（仅进程调用，不参与构建）"]
+        WTIPS["WinTips.exe<br/>net10.0-windows WPF 浮窗<br/>（MSBuild Target 外挂构建部署）"]
     end
 
     PERSIST[("JSON 配置持久化<br/>%APPDATA%/WinCanvas/config.json")]
@@ -44,7 +45,9 @@ graph TB
     VM -->|"枚举/置顶/透明/穿透/圆角"| WCS
     VM -->|"Load/Update/Flush"| CFG
     VM -->|"Initialize/Update/Pause/Resume"| IF1
-    VM -->|"IsEnabled / LogMessage / NumLockTipRequested"| WTI
+    VM -->|"开关：IsEnabled + Start/Stop"| WTI
+    VM -->|"Start / Stop（钩子启停）"| KIS
+    KIS -->|"ShowNumLockStatus(isLocked)"| WTI
     WCS --> NM
     WS --> IMG & VID & PKG
     WS --> LOOP
@@ -52,6 +55,7 @@ graph TB
     LOOP --> WNM
     PKG --> REPKG
     WTI -->|"--test num on|off"| WTIPS
+    APP -.->|"BuildAndDeployWinTips Target<br/>dotnet build（.NET 10 SDK）+ 拷贝"| WTIPS
     CFG --> PERSIST
     PKG --> CACHE
     WS -.->|"实现"| IF1
@@ -153,14 +157,24 @@ flowchart LR
 - **预览旁路**：主窗口预览区为派生显示（图片快照副本上屏；视频的组合呈现路径下预览为空，
   主输出 = 目标窗口）。
 
-## 4. WinTips 提示模块
+## 4. WinTips 提示模块（NumLock 键盘钩子链路，WP2）
 
-- `WinTipsIntegrationService` 实现 `IStatusNotifier`（src/WinCanvas.Wallpaper/WinTipsIntegrationService.cs:18）：
-  1. 优先：进程调用已部署的 `WinTips.exe --test num on|off [holdSeconds]`（一次性启动、不等待退出，避免阻塞调用线程）；
-  2. 回退：找不到 exe 或启动失败时触发本地事件 `NumLockTipRequested`，由 `MainViewModel` 订阅后在 InfoBar 显示。
+### 事件源：KeyboardIndicatorService（src/WinCanvas.Core/Services/KeyboardIndicatorService.cs）
+
+- 低级键盘钩子（`SetWindowsHookExW(WH_KEYBOARD_LL)`）安装在**专用后台消息线程**（线程名 `WinCanvas.KeyboardHook`）上：该线程先 `PeekMessageW` 建队、记录 Win32 线程 Id、装钩，然后跑 `GetMessageW` 循环（空闲零 CPU）；停止时外部向该线程 `PostThreadMessageW(WM_QUIT)`，循环退出后由钩子线程自身 `UnhookWindowsHookEx`（时序保证卸载发生在最后一次回调之后）。
+- 回调内只过滤 `WM_KEYDOWN/WM_KEYUP` 且 `vkCode == VK_NUMLOCK(0x90)` 的事件，读一次 `GetKeyState` 切换位并与上次上报值去抖（Interlocked）：**状态变化才上报**——按住自动重复、KEYDOWN/KEYUP 双时机读到同值都被抑制；KEYDOWN/KEYUP 各读一次的自纠错设计不依赖系统翻转时机，每次翻转恰好上报一次正确新状态。
+- 回调微秒级返回（只读状态 + 整数比较），上报动作经线程池派发到 `IStatusNotifier.ShowNumLockStatus`——绝不拖慢全系统键盘输入，也绝不吞键（永远 `CallNextHookEx` 放行）。
+- 生命周期：主界面「WinTips 提示」开关开→`Start()`（托管线程创建，UI 线程零 P/Invoke）、关→`Stop()`（投递/等待派发线程池）；应用退出 `MainWindow.Closed → Dispose()` 显式卸钩，与进程退出对 IsBackground 线程的回收构成双保险。
+- 诊断日志：`%LOCALAPPDATA%/WinCanvas/logs/keyboard-diag.log`（安装/状态变化/去抖抑制/Unhook 完成，`KeyboardDiagnostics` 静态类，失败静默）。
+
+### 呈现：WinTipsIntegrationService（src/WinCanvas.Wallpaper/WinTipsIntegrationService.cs）
+
+1. 优先：进程调用已部署的 `WinTips.exe --test num on|off [holdSeconds]`（一次性启动、不等待退出，避免阻塞调用线程）；
+2. 回退：找不到 exe 或启动失败时触发本地事件 `NumLockTipRequested`，由 `MainViewModel` 订阅后在 InfoBar 显示。
+
 - exe 定位顺序：显式注入路径 → 程序目录旁 `WinTips\WinTips.exe` → `%LOCALAPPDATA%\Programs\WinTips\WinTips.exe` 等候选。
 - `IsEnabled` 开关关闭时静默忽略，不产生进程启动或回退事件。
-- WinTips 子模块本身（net10.0-windows WPF WinExe）在 .NET 8 环境不可构建，故不项目引用。
+- WinTips 子模块本身（net10.0-windows WPF WinExe）不加入 `WinCanvas.sln`、不项目引用：由 `WinCanvas.App.csproj` 的 `BuildAndDeployWinTips` Target（`AfterTargets="Build"`，Inputs/Outputs 增量）用 .NET 10 SDK 外挂构建 `-c Release` 并把产物拷到 `$(OutDir)WinTips\`；构建失败仅产生 warning（运行期自动走 InfoBar 回退），不阻断主构建。
 
 ## 5. MVVM 与线程模型
 
@@ -176,8 +190,10 @@ flowchart LR
 | 线程 | 职责 | 来源 |
 | --- | --- | --- |
 | UI 线程 | XAML / ViewModel 属性 / `DispatcherQueue.TryEnqueue` 封送后的提示更新 | WinUI 3 |
-| 线程池（Task.Run） | 窗口枚举、全部 Win32 窗口操作、壁纸资源准备（解码/解包）、配置防抖写盘 | `WindowControlService` / `WallpaperService` / `ConfigurationService` |
+| 线程池（Task.Run） | 窗口枚举、全部 Win32 窗口操作、壁纸资源准备（解码/解包）、配置防抖写盘、NumLock 上报派发 | `WindowControlService` / `WallpaperService` / `ConfigurationService` / `KeyboardIndicatorService` |
 | `WinCanvas.Wallpaper.Render` 后台线程 | 逐帧 `FrameTick` 回调、全屏检测（250ms 节流）、渲染状态上报 | `WallpaperRenderLoop`，BelowNormal 优先级 |
+| `WinCanvas.Wallpaper.HostPump` 专用消息线程 | 宿主窗口创建/销毁/跟随、WinEvent 钩子回调（WP1） | `WallpaperHostPump`，STA |
+| `WinCanvas.KeyboardHook` 专用消息线程 | LL 键盘钩子安装/回调/卸载，`GetMessageW` 循环空闲零 CPU（WP2） | `KeyboardIndicatorService`，Normal 优先级 |
 
 跨线程数据保护：
 
@@ -194,7 +210,7 @@ flowchart LR
 | CommunityToolkit.Mvvm 8.4.2 | NuGet | MVVM 源生成器 |
 | SixLabors.ImageSharp 2.1.9 | NuGet | 图片解码与缩放（与 repkg 同版本，避免依赖冲突） |
 | RePKG.Core / RePKG.Application | git 子模块源码项目引用（netstandard2.0） | Wallpaper Engine pkg/tex 解析 |
-| WinTips | git 子模块，仅进程调用其已部署 exe | NumLock 浮窗提示 |
-| user32.dll / dwmapi.dll | P/Invoke | 窗口枚举与属性、圆角、显示器信息 |
+| WinTips | git 子模块，MSBuild Target 外挂构建（.NET 10 SDK）+ 进程调用其 exe | NumLock 浮窗提示 |
+| user32.dll / dwmapi.dll / kernel32.dll | P/Invoke | 窗口枚举与属性、圆角、显示器信息、LL 键盘钩子 |
 
 配置与缓存路径：`%APPDATA%/WinCanvas/config.json`（UTF-8 无 BOM）；`%LOCALAPPDATA%/WinCanvas/wallpaper-cache/<文件名-hash>/`（pkg 解包缓存）。

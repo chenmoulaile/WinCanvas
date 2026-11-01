@@ -320,9 +320,103 @@
 
 
 
-## 3. WP2 NumLock 键盘钩子与提示链路端到端（待开始）
+## 3. WP2 NumLock 键盘钩子与提示链路端到端（2026-11-01）
 
-> 预留区块：钩子服务 / 开关接线 / WinTips.exe 构建部署。完成后按同一结构补录。
+**状态**：完成。提交：`feat(WP2): NumLock 钩子与 WinTips 部署打通`（分支 `feat/complete-w0-w5`）。
+
+### 改动清单
+
+| 文件 | 动作 | 说明 |
+| --- | --- | --- |
+| `src/WinCanvas.Core/Native/NativeMethods.cs` | 修改 | 追加 LL 键盘钩子 P/Invoke：`SetWindowsHookExW` / `UnhookWindowsHookEx` / `CallNextHookEx` / `GetKeyState` / `PostThreadMessageW` / `GetMessageW` / `PeekMessageW` / `GetModuleHandleW` / `GetCurrentThreadId`，常量（WH_KEYBOARD_LL=13、VK_NUMLOCK=0x90、WM_KEYDOWN/UP、WM_QUIT、HC_ACTION、LLKHF_INJECTED）与类型（`LowLevelKeyboardProc` / `KBDLLHOOKSTRUCT` / `MSG` / `POINT`），注释规格对齐既有条目（作用/参数/返回值/失败语义 + 使用约定说明） |
+| `src/WinCanvas.Core/Services/KeyboardIndicatorService.cs` | 新增 | 钩子服务：专用后台消息线程（`WinCanvas.KeyboardHook`，建队→记线程 Id→播种去抖基线→装钩→`GetMessageW` 循环→线程自身 Unhook）；回调只做「读一次 GetKeyState + Interlocked 去抖 + 必要时线程池派发」，永远 `CallNextHookEx` 放行；`Start`/`Stop`/`Dispose` 生命周期（每周期独立 HookCycle 对象，快速开关不串扰）；`IsHookInstalled`（Interlocked 安装计数，跨周期真实口径）；`Diagnostics` 事件 |
+| `src/WinCanvas.Core/Services/KeyboardDiagnostics.cs` | 新增 | 诊断日志（`%LOCALAPPDATA%\WinCanvas\logs\keyboard-diag.log`），范式镜像 WP1 的 `HostDiagnostics`（锁保护追加、写失败静默、抑制类 1s 节流） |
+| `src/WinCanvas.App/Services/AppServices.cs` | 修改 | 组合根创建 `KeyboardIndicator = new KeyboardIndicatorService(WinTips)`（注入 WinTips 集成服务作上报目标） |
+| `src/WinCanvas.App/ViewModels/MainViewModel.cs` | 修改 | `OnWinTipsEnabledChanged` 同时控制 `WinTips.IsEnabled` 与钩子 `Start()`/`Stop()`；InfoBar 文案更新（含「钩子安装中/已卸载」语义） |
+| `src/WinCanvas.App/MainWindow.xaml.cs` | 修改 | `Closed` 处理追加 `services.KeyboardIndicator.Dispose()`（显式卸钩，与进程退出兜底构成双保险） |
+| `src/WinCanvas.App/WinCanvas.App.csproj` | 修改 | 新增 Target `BuildAndDeployWinTips`（`AfterTargets="Build"`，Inputs/Outputs 增量）：`dotnet build ThirdParty/WinTips/WinTips.csproj -c Release` 外挂构建 + 产物拷贝 `$(OutDir)WinTips\`；`IgnoreExitCode` + 失败仅 Warning（「失败+原因+建议」文案）；子模块缺失专属告警 |
+| `README.md` | 修改 | ① 功能区「WinTips 提示」改写为「WinTips 提示与 NumLock 指示」（钩子链路 + 自动部署说明）；② 前置条件表补 .NET 10 SDK 行；③ 使用说明第 4 条更新；④ 已知限制删除「NumLock 键盘钩子未实现」、改写 WinTips 构建条目、新增「NumLock 提示依赖系统注入语义」残留限制 |
+| `docs/architecture.md` | 修改 | 架构图加 `KIS` 节点与接线（VM→KIS→WTI、App Target→WTIPS）；§4 改写为「WinTips 提示模块（NumLock 键盘钩子链路，WP2）」；§5 线程表补 `WinCanvas.KeyboardHook` 行；依赖表更新 |
+| `docs/api.md` | 修改 | 新增 §3.5 `KeyboardIndicatorService` 公共 API 与 §4 P/Invoke 清单追加钩子系条目；后续小节顺延重编号；`WinTipsIntegrationService` 的「当前无调用方」注释删除 |
+| `docs/risk.md` | 修改 | 风险矩阵新增「全系统键盘输入（WP2 新增）」行（缓解/未覆盖如实分列）；「功能完整性」行把 NumLock 从未覆盖移入已覆盖 |
+| `tools/Wp2NumLockDiag/`（csproj + Program.cs，不入 sln） | 新增 | 端到端验收诊断命令：SendInput 注入 NumLock，11 项断言（安装/2s 内上报/值正确/单次上报/延迟/Stop 卸钩日志/卸钩后零反应/幂等） |
+
+### 关键决策与理由
+
+1. **钩子线程生命周期采用「每周期独立 HookCycle 对象」**：`Start` 创建（线程+就绪信号+Win32 线程 Id+钩子句柄+专属回调委托），`Stop` 只触碰自己捕获的周期对象。理由：快速「关→开」时旧周期的收尾（投递 WM_QUIT / Join）绝不可能误伤新周期；共享字段（`_lastReportedState` 去抖基线）跨周期保留（Interlocked），周期交接也不会重复上报。UI 线程零 P/Invoke：`Start` 只做托管 `Thread.Start`；`Stop` 的 `PostThreadMessageW`+`Join` 派发线程池（Task.Run 全局队列 FIFO 保证 Start→Stop 顺序）。
+2. **去抖为「KEYDOWN/KEYUP 各读一次 GetKeyState + 与上次上报值比对」的自纠错设计**：不依赖系统对 NumLock 开关位的翻转时机（按下翻 or 抬起翻）——先看到新状态的时机上报、另一时机被去抖吞掉，每次翻转恰好上报一次正确新状态；按住自动重复读到的开关位不变，被去抖抑制（无提示风暴）。**实机日志证实本机时序为「KEYDOWN 读到翻转前状态（被抑制）、KEYUP 读到新状态（上报）」**（keyboard-diag.log 15:07:29.304 抑制 → .305 上报），设计假设与真实行为一致。`GetKeyState` 切换位（bit0）是全局会话状态（LED 灯态），从钩子线程读取即全局现值（与按下位的线程同步语义不同，已在 P/Invoke 注释中说明）。
+3. **E2E 诊断工具抓出并修复一个真实缺陷（钩子未卸载）**：初版把「就绪信号」放在线程退出的 `finally` 置位，而 `StopCore` 要等它才投递 WM_QUIT——等待必然超时、钩子永远不卸，且 `IsHookInstalled` 因 `_cycle` 置空呈假阴性（首轮 E2E 两个 FAIL：卸钩日志缺失 + Stop 后按键仍上报）。修复：装钩完成后进泵前显式置位就绪信号；`IsHookInstalled` 改为 Interlocked 安装计数。该缺陷单靠构建/单测不可见，是「验收用诊断命令」路线（同 WP1-A 的 Wp1AHostDiag）价值的直接证据。
+4. **注入事件不过滤 LLKHF_INJECTED**：SendInput / 屏幕键盘产生的 NumLock 状态变化同样是真实状态变化，过滤它们会让指示器失真；物理与注入事件都已实测可用。
+5. **WinTips.exe 外挂构建 Target 用标准 Inputs/Outputs 增量语义**：初稿用「产物存在即跳过」的存在性判断，会把过期 exe 留在部署目录（子模块更新后不重建），改为 Inputs=子模块 cs+csproj+xaml、Outputs=`$(OutDir)WinTips\WinTips.exe`——源码更新或产物被清理后自动重建（clean 全量构建已实测自动重建）。构建失败 `IgnoreExitCode` + Warning（不阻断主构建，exe 缺失走既有 InfoBar 回退）。
+6. **WinTips 子模块零改动**：`dotnet build ThirdParty/WinTips/WinTips.csproj -c Release` 在 .NET 10.0.403 下直接 0 警告 0 错误通过（原文输出见验证证据），无需规格预留的「最小修复」；子模块自身 `.gitignore` 已覆盖 bin/obj，外挂构建不污染 git 状态（每次构建后 `git status` 复核）。另实测发现其停留时长被源码钳制为 0.5~10 秒（`OsdWindow.xaml.cs:249 Math.Clamp(seconds, 0.5, 10)`），产品使用的 hold=2 在钳制范围内，行为不受影响。
+7. **文档三件套同步超出 WP2 字面 DoD**（规格只点名 README）：§3 全局硬约束要求涉及能力变化的 WP 同步 docs 三件套，故 architecture/api/risk 一并更新（决策同 WP0 对 README 的提前改写）。
+
+### 验证证据摘要（命令均实际执行，输出为原文摘录）
+
+- **门禁构建**（clean 全量，口径同 §0.2）：`dotnet clean WinCanvas.sln -c Debug` → `dotnet build WinCanvas.sln -c Debug`：
+
+  ```
+      26 个警告
+      0 个错误
+  ```
+
+  与 WP0 基线 26 持平，**WP2 零新增警告**（新增 Core 代码无任何警告）。
+- **测试**：`dotnet test WinCanvas.sln -c Debug --no-build`：
+
+  ```
+  已通过! - 失败:     0，通过:     6，已跳过:     0，总计:     6，持续时间: 14 ms - WinCanvas.Core.Tests.dll (net8.0)
+  ```
+
+- **WinTips 子模块外挂构建**：`dotnet build /d/Window/ThirdParty/WinTips/WinTips.csproj -c Release --nologo`：
+
+  ```
+  WinTips -> D:\Window\ThirdParty\WinTips\bin\Release\net10.0-windows\WinTips.dll
+  已成功生成。
+      0 个警告
+      0 个错误
+  ```
+
+- **部署产物**（clean 构建后自动重建，证明 Target 增量语义正确）：`src/WinCanvas.App/bin/x64/Debug/net8.0-windows10.0.19041.0/win-x64/WinTips/` 含 `WinTips.exe / WinTips.dll / WinTips.deps.json / WinTips.runtimeconfig.json / WinTips.pdb`。**DoD「build 后输出目录存在 WinTips\WinTips.exe」满足。**
+- **E2E 诊断工具**（`dotnet build tools/Wp2NumLockDiag -c Debug` 后直接运行 exe，SendInput 真实注入；11/11 PASS，输出原文）：
+
+  ```
+  [PASS] Start 后 2s 内 LL 钩子已安装（IsHookInstalled）
+  [PASS] 注入 NumLock 按键后 2s 内收到上报（提示链路连通）
+  [PASS] 上报值 = 翻转后状态（期望 False，实际 False）
+  [PASS] 一次按键只报 1 次（KEYDOWN/KEYUP 去抖；实际 1 次）
+  [PASS] 钩子事件延迟毫秒级（max=0ms < 100ms）
+  [PASS] 第二次按键后收到第 2 条上报（状态交替上报）
+  [PASS] 第 2 条上报 = 原状态（期望 True，实际 True）
+  [PASS] 连续多次按键只报状态变化（实际共 2 条，期望 2）
+  [PASS] Stop 后 3s 内收到「UnhookWindowsHookEx 调用完成」日志（卸钩日志验证）
+  [PASS] Stop 后 IsHookInstalled=false
+  [PASS] Stop 后注入按键零上报（按键无反应；实际 2 条）
+  [PASS] 重复 Stop 幂等（无异常）
+  == 全部断言通过 ==
+  ```
+
+  对应 keyboard-diag.log（时间戳原文）：`15:07:29.282 [04] NumLock LL 钩子已安装（tid=32300，初始锁定=True）` → `15:07:29.304 重复状态事件已抑制` → `.305 状态变化 → 已解锁（事件延迟 0ms）` → `.667 状态变化 → 已锁定` → `15:07:29.980 UnhookWindowsHookEx 调用完成：成功，NumLock 钩子已卸载`，此后零事件。**注入两次按键结束时 LED 状态还原**（工具内置 GetKeyState 兜底还原，实测命中）。
+- **真实应用 GUI 验证**（WinCanvas.App.exe + AX 元素树 / 日志，无像素截屏）：
+  - 开关开启：InfoBar 显示「WinTips 提示已开启：NumLock 钩子安装中……」；日志 `15:13:10.373 [09] NumLock LL 钩子已安装（tid=32664，初始锁定=True）`（[09] 即应用进程钩子线程）。
+  - SendKeys 注入 `{NUMLOCK}` 后：InfoBar 显示 **「WinTips：WinTips NumLock 提示已请求（isLocked=True）: D:\Window\src\WinCanvas.App\bin\x64\...\win-x64\WinTips\WinTips.exe」**——钩子→去抖→`ShowNumLockStatus`→定位到部署目录 exe→`Process.Start` 成功（该日志行仅在 Start 成功后记录）；`tasklist` 同期可见 WinTips.exe 进程被产品链路拉起。**DoD「开启开关后按 NumLock，2s 内浮窗出现（exe 已部署）」的链路证据成立**（按键→上报间隔日志实测 0ms，远小于 2s）。
+  - exe 缺失回退：`WinTips.exe` 改名后重启应用→开关 ON→注入→InfoBar 显示 **「NumLock 已锁定」**（`NumLockTipRequested` → InfoBar 回退通道）。**DoD 的 exe 缺失场景满足。**
+  - 应用退出卸钩：`taskkill /PID 22496`（WM_CLOSE 优雅关闭）→ 日志 `15:21:44.628 [09] UnhookWindowsHookEx 调用完成：成功，NumLock 钩子已卸载`，进程退出（tasklist 确认）。第二轮应用实例同样以 `15:23:23.986 [10] UnhookWindowsHookEx 调用完成：成功` 收尾。**DoD「应用退出后钩子卸载（双保险）」满足。**
+  - 全系统键盘无可感知延迟：钩子事件延迟打点实测 **0ms**（两轮 GUI 验证 4 次状态变化全部 0ms，E2E 断言 max=0ms < 100ms）；回调内只有「一次 GetKeyState + 整数比较」，非 NumLock 按键路径更短（读 nCode→比较 wParam→放行），设计上不存在可感知延迟来源。
+- **未取得（如实标注）**：WinTips 浮窗的**可视截图**。浮窗是 WinTips 自有的 WPF 透明无激活窗口，UIA 元素树不含它（`capture_app` 多次返回 "no visible top-level window"），全屏连拍窗口期又与其退出时序错开；且连拍期间发现用户正在本机实时操作（前台应用被切换），为避免继续采集用户桌面内容，停止了截屏尝试。浮窗自身的渲染属 WinTips 子模块内部逻辑（`ShowTest → OsdController.ShowTest → OsdWindow.ShowTip`，源码已读），产品链路只负责「以正确参数启动 exe」，该环节有 InfoBar 日志 + 进程产生双重证据。
+
+### DoD 自检
+
+- [x] 开启开关后按 NumLock，2s 内浮窗提示链路触发（exe 已部署：InfoBar 记录 Process.Start 成功 + 进程产生；exe 缺失场景：InfoBar 回退提示实测出现）
+- [x] 同一键连续按多次只报状态变化，无重复提示风暴（E2E：两次按键恰好 2 条上报；去抖抑制有日志）
+- [x] 关闭开关后按键无任何反应，且 `UnhookWindowsHookEx` 已调用（E2E 11/11 + keyboard-diag.log 原文）
+- [x] 应用退出后钩子卸载（显式 Dispose 卸钩日志 × 2 轮 + 进程退出自动卸载兜底）
+- [x] 钩子存在期间全系统键盘输入无可感知延迟（事件延迟打点 0ms；回调微秒级设计）
+- [x] `dotnet build` 后输出目录存在 `WinTips\WinTips.exe`（clean 构建自动重建实测）
+- [x] README「已知限制」NumLock 条目已移除/改写；docs 三件套同步；提交 `feat(WP2): NumLock 钩子与 WinTips 部署打通`
+
+**禁止事项自查**：未在 UI 线程装钩子（Start 仅托管线程创建）；未使用 GetAsyncKeyState 轮询方案；未改动 WinTips 子模块功能逻辑（源码零 diff，`git submodule status` 无变化）。
+
+---
 
 ## 4. WP3 状态重启自动恢复（待开始）
 

@@ -227,4 +227,205 @@ internal static partial class NativeMethods
     /// <returns>HRESULT：S_OK(0) 成功；负值为错误码。Win10 1809 之前不认识该属性，返回 E_INVALIDARG。</returns>
     [DllImport("dwmapi.dll", SetLastError = false)]
     public static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
+
+    // ===== 键盘低级钩子（WH_KEYBOARD_LL，WP2 NumLock 指示器专用） =====
+    // 使用约定（为什么这样调）：
+    // 1. LL 钩子的回调在「安装钩子的线程」上同步执行，且要求该线程持续跑消息循环（GetMessage）——
+    //    系统把键盘事件投递到该线程队列、由泵消息触发回调；线程不泵消息 = 全系统键盘输入被挂起。
+    //    因此 KeyboardIndicatorService 把安装/卸载/回调全部放在专用后台线程上，绝不占用 UI 线程。
+    // 2. 回调内只允许做极短的工作（读状态 + 判定），任何耗时操作（弹提示、启动进程）必须派发线程池，
+    //    否则低级钩子超时（系统默认 LowLevelHooksTimeout）会被系统直接摘除钩子。
+    // 3. 回调必须无条件 CallNextHookEx 放行事件——本服务只是「旁路观察者」，绝不吞键。
+
+    /// <summary>WH_KEYBOARD_LL(13)：低级键盘钩子，监视所有线程的键盘事件（注入与物理按键都可见）。</summary>
+    public const int WH_KEYBOARD_LL = 13;
+
+    /// <summary>VK_NUMLOCK(0x90)：NumLock 虚拟键码。</summary>
+    public const int VK_NUMLOCK = 0x90;
+
+    /// <summary>WM_KEYDOWN(0x0100)：非系统键按下消息。</summary>
+    public const uint WM_KEYDOWN = 0x0100;
+
+    /// <summary>WM_KEYUP(0x0101)：非系统键抬起消息。</summary>
+    public const uint WM_KEYUP = 0x0101;
+
+    /// <summary>WM_QUIT(0x0012)：终止线程消息循环的专用消息——GetMessage 收到它返回 0 使循环退出。</summary>
+    public const uint WM_QUIT = 0x0012;
+
+    /// <summary>HC_ACTION(0)：钩子回调 nCode 的正常处理值，表示 wParam/lParam 携带有效键盘事件。</summary>
+    public const int HC_ACTION = 0;
+
+    /// <summary>LLKHF_INJECTED(0x10)：KBDLLHOOKSTRUCT.flags 位——事件由 SendInput 等注入产生而非物理按键。</summary>
+    public const uint LLKHF_INJECTED = 0x10;
+
+    /// <summary>
+    /// LL 键盘钩子回调委托。对应 Win32 的 HOOKPROC；必须作为字段长期持有（防 GC 回收后系统回调野指针）。
+    /// </summary>
+    /// <param name="nCode">HC_ACTION(0) = 事件有效需处理；负值 = 必须原样 CallNextHookEx 转交，不得处理。</param>
+    /// <param name="wParam">键盘消息类型（WM_KEYDOWN / WM_KEYUP / WM_SYSKEYDOWN / WM_SYSKEYUP）。</param>
+    /// <param name="lParam">指向 KBDLLHOOKSTRUCT 的指针（只读，不得修改）。</param>
+    /// <returns>若本钩子处理了事件，返回非零可阻止后续钩子与目标线程收到（本服务永远放行，返回 CallNextHookEx 的结果）。</returns>
+    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>
+    /// 低级键盘钩子事件结构（winuser.h 的 KBDLLHOOKSTRUCT，lParam 所指）。
+    /// 布局与 Win32 严格一致（Sequential + Pack 默认即可，全为 4/指针大小字段）。
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KBDLLHOOKSTRUCT
+    {
+        /// <summary>虚拟键码（本服务只关心 VK_NUMLOCK=0x90）。</summary>
+        public uint vkCode;
+
+        /// <summary>硬件扫描码（含厂商扩展位，本服务不使用）。</summary>
+        public uint scanCode;
+
+        /// <summary>标志位：LLKHF_INJECTED(0x10)=注入事件、LLKHF_EXTENDED(0x01)=扩展键等。</summary>
+        public uint flags;
+
+        /// <summary>事件时间戳（GetTickCount 毫秒口径，与 GetMessageTime 可比；用于打点延迟）。</summary>
+        public uint time;
+
+        /// <summary>注入来源的附加信息（SendInput 的 dwExtraInfo 原样回传，本服务不使用）。</summary>
+        public UIntPtr dwExtraInfo;
+    }
+
+    /// <summary>
+    /// 安装钩子。LL 键盘钩子必须由带消息循环的线程安装并泵消息，否则回调永远不触发。
+    /// </summary>
+    /// <param name="idHook">钩子类型，本服务传 WH_KEYBOARD_LL(13)。</param>
+    /// <param name="lpfn">回调委托（须由调用方长期持有引用，防 GC 回收）。</param>
+    /// <param name="hMod">含回调代码的模块句柄；回调在本进程程序集内时传 GetModuleHandleW(null)（或 NULL 亦可，统一用前者与主流示例一致）。</param>
+    /// <param name="dwThreadId">关联线程 Id；0 = 全局钩子（LL 钩子只能是全局，传 0）。</param>
+    /// <returns>钩子句柄；失败返回 IntPtr.Zero（用 GetLastError 取错误码，如超时/权限不足）。</returns>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWindowsHookExW(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+    /// <summary>
+    /// 卸载钩子。必须由安装钩子的线程或任意线程调用均可生效；本服务在钩子线程自身退出前调用（时序最干净）。
+    /// </summary>
+    /// <param name="hhk">SetWindowsHookExW 返回的钩子句柄。</param>
+    /// <returns>true = 成功；false = 失败（句柄无效或已被系统摘除）。</returns>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    /// <summary>
+    /// 把钩子事件转交给钩子链中的下一个钩子（或最终目标）。本服务的回调无论是否处理都必须调用它放行，
+    /// 否则全系统键盘事件链被截断（其他键盘钩子与目标应用收不到事件）。
+    /// </summary>
+    /// <param name="hhk">本钩子的句柄（系统用它定位链中下一个钩子；可传 IntPtr.Zero，系统仍按链推进，规范起见传真实句柄）。</param>
+    /// <param name="nCode">原样透传回调收到的 nCode。</param>
+    /// <param name="wParam">原样透传回调收到的 wParam。</param>
+    /// <param name="lParam">原样透传回调收到的 lParam。</param>
+    /// <returns>钩子链中下一个钩子的返回值（本服务原样返回给系统）。</returns>
+    [DllImport("user32.dll")]
+    public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>
+    /// 读取指定虚拟键的同步键盘状态（低位 bit0 = 切换键开关系数；高位 bit15 = 当前按下）。
+    /// </summary>
+    /// <remarks>
+    /// 为什么用 GetKeyState 而不是 GetAsyncKeyState：NumLock 的「开关位」是全局会话状态（即 LED 灯态），
+    /// GetKeyState 返回的切换位在任何线程上都读到该全局值；而按下位才是随线程消息处理的同步状态。
+    /// 在 LL 钩子回调里于 WM_KEYDOWN / WM_KEYUP 两个时机都读一次，配合「与上次上报不同才上报」的去抖，
+    /// 无论系统在按下还是抬起时刻才翻转开关位，都能恰好上报一次正确的新状态（自纠错设计，见服务注释）。
+    /// </remarks>
+    /// <param name="nVirtKey">虚拟键码（本服务传 VK_NUMLOCK=0x90）。</param>
+    /// <returns>SHORT 状态值：bit0=1 表示 NumLock 处于锁定（开）状态；bit15=1 表示键当前按下。</returns>
+    [DllImport("user32.dll")]
+    public static extern short GetKeyState(int nVirtKey);
+
+    /// <summary>
+    /// 向指定线程的消息队列投递一条消息（本服务用它向钩子线程投递 WM_QUIT 以退出 GetMessage 循环）。
+    /// </summary>
+    /// <param name="idThread">目标线程 Id（本服务传钩子线程的 GetCurrentThreadId 返回值）。</param>
+    /// <param name="msg">消息 Id（WM_QUIT=0x0012 使 GetMessage 返回 0 退出循环）。</param>
+    /// <param name="wParam">消息 wParam（WM_QUIT 场景传 0）。</param>
+    /// <param name="lParam">消息 lParam（WM_QUIT 场景传 0）。</param>
+    /// <returns>true = 已入队；false = 失败（线程 Id 无效或队列满，用 GetLastError 取错误码）。</returns>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostThreadMessageW(uint idThread, uint msg, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>
+    /// 取当前进程主模块（exe）句柄。LL 钩子回调在本进程内，用它作为 SetWindowsHookExW 的 hMod 参数。
+    /// </summary>
+    /// <param name="lpModuleName">模块名；null = 返回当前进程的 exe 模块句柄（本服务的用法）。</param>
+    /// <returns>模块句柄；失败返回 IntPtr.Zero。</returns>
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern IntPtr GetModuleHandleW(string? lpModuleName);
+
+    /// <summary>
+    /// 取调用线程的 Win32 线程 Id。钩子线程装好钩子后记录它，
+    /// Stop 方向以 PostThreadMessageW(WM_QUIT) 定向投递到该 Id 使消息循环退出。
+    /// </summary>
+    /// <returns>当前线程的 Win32 线程 Id（注意与 .NET 的 ManagedThreadId 不是同一个数）。</returns>
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
+
+    /// <summary>Win32 POINT 结构（MSG.pt 字段用）。</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT
+    {
+        /// <summary>X 坐标。</summary>
+        public int X;
+
+        /// <summary>Y 坐标。</summary>
+        public int Y;
+    }
+
+    /// <summary>
+    /// Win32 MSG 结构（winuser.h 的 tagMSG）。必须包含末尾的 lPrivate 字段补齐 64 位下的真实布局——
+    /// GetMessageW 会按原生结构全尺寸写入，托管侧结构若声明偏小会造成缓冲区越界。
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSG
+    {
+        /// <summary>消息目标窗口句柄（线程消息为 IntPtr.Zero）。</summary>
+        public IntPtr hwnd;
+
+        /// <summary>消息 Id（如 WM_QUIT）。</summary>
+        public uint message;
+
+        /// <summary>消息 wParam。</summary>
+        public IntPtr wParam;
+
+        /// <summary>消息 lParam。</summary>
+        public IntPtr lParam;
+
+        /// <summary>消息投递时间（GetTickCount 毫秒口径）。</summary>
+        public uint time;
+
+        /// <summary>消息投递时的光标位置。</summary>
+        public POINT pt;
+
+        /// <summary>Windows 私有字段（必须声明以补齐结构尺寸，勿读写）。</summary>
+        public uint lPrivate;
+    }
+
+    /// <summary>
+    /// 从调用线程的消息队列取一条消息；没有消息时阻塞等待（这正是钩子线程空闲时零 CPU 占用的机制）。
+    /// </summary>
+    /// <param name="lpMsg">输出：接收取到的消息。</param>
+    /// <param name="hWnd">过滤窗口句柄；IntPtr.Zero = 不过滤（取本线程全部消息）。</param>
+    /// <param name="wMsgFilterMin">消息 Id 过滤下限；0 = 不过滤。</param>
+    /// <param name="wMsgFilterMax">消息 Id 过滤上限；0 = 不过滤。</param>
+    /// <returns>大于 0 = 取到消息（需 DispatchMessage）；0 = 取到 WM_QUIT（循环应退出）；-1 = 出错（用 GetLastError 取错误码）。</returns>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int GetMessageW(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+    /// <summary>
+    /// 非阻塞地窥视消息队列。本服务在钩子线程启动时以 PM_NOREMOVE 调用一次——
+    /// Win32 线程的消息队列是惰性创建的，首次调用队列类 API 才会建队；
+    /// 先建队再让外部 PostThreadMessageW(WM_QUIT)，避免「队列尚不存在导致投递失败」的竞态。
+    /// </summary>
+    /// <param name="lpMsg">输出：接收窥视到的消息（PM_NOREMOVE 下不取走）。</param>
+    /// <param name="hWnd">过滤窗口句柄；IntPtr.Zero = 不过滤。</param>
+    /// <param name="wMsgFilterMin">消息 Id 过滤下限；0 = 不过滤。</param>
+    /// <param name="wMsgFilterMax">消息 Id 过滤上限；0 = 不过滤。</param>
+    /// <param name="wRemoveMsg">PM_NOREMOVE(0x0000) = 只看不取走（本服务的用法）。</param>
+    /// <returns>true = 队列中有可用消息；false = 队列为空或出错（用 GetLastError 区分，ERROR_NO_MORE_MESSAGES(1158) 为队列为空）。</returns>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PeekMessageW(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
 }
