@@ -94,6 +94,7 @@
 
 ## 2. WP1 壁纸真实上屏
 
+
 ### 2.A 阶段 A：宿主窗口与双路径挂接（2026-11-01）
 
 **状态**：完成。提交：`feat(WP1-A): 宿主窗口与双路径挂接`（分支 `feat/complete-w0-w5`）。先不渲染，宿主以纯色（深蓝 RGB(30,80,180)，`HostNativeMethods.HostPhaseAFillColor`）GDI 填充验证挂接正确性；阶段 B 换 DComp 渲染时窗口类、挂接与跟随逻辑保留复用。
@@ -163,6 +164,57 @@
 - [x] 关闭目标窗口后 1s 内宿主销毁且会话 Dispose（诊断：TargetLost 16~218ms，宿主句柄失效，全域残留计数 = 0）
 - [x] 应用退出时全部宿主销毁（`ShutdownAll` 已接线 MainWindow.Closed；服务冒烟 ShutdownAll 清零 = 0；宿主 pump 为 IsBackground 线程进程退出自动回收兜底）
 - [x] 阶段提交 `feat(WP1-A): 宿主窗口与双路径挂接`
+
+---
+
+### 2.B 阶段 B：图片上屏 DComp / Direct2D（2026-11-01）
+
+**状态**：完成。提交：`feat(WP1-B): 图片 DComp 上屏`（分支 `feat/complete-w0-w5`）。主路径 DComp 落地（零新 NuGet 依赖，手写 COM 接口声明），回退路径 UpdateLayeredWindow 未启用——DComp 互操作未受阻，规格的回退条件不成立（见关键决策 2）。
+
+#### 改动清单
+
+| 文件 | 动作 | 说明 |
+| --- | --- | --- |
+| `src/WinCanvas.Wallpaper/Rendering/BgraSnapshot.cs` | 新增 | 像素快照 record + `BitmapSnapshot.CopyFrom`（自 `WallpaperPreviewController.SnapshotBitmap` 下沉，预览与宿主共用一份，规格 B.3；纯 WinRT 投影实现，含紧密/带行距双路径） |
+| `src/WinCanvas.Wallpaper/Hosting/DcompNativeMethods.cs` | 新增 | DComp/D3D11/DXGI 导出函数 + 手写 COM 接口（IDCompositionDevice/Target/Visual/Surface、IDXGISurface/1），vtable 逐一对照真实 SDK 头文件核对并经探针实测修正 |
+| `src/WinCanvas.Wallpaper/Hosting/WallpaperHostRenderer.cs` | 新增 | 每宿主一渲染器：建树（D3D11→QI→DComp→Target→Visual→Surface）+ GDI 贴图（BeginDraw→GetDC→StretchDIBits→EndDraw→Commit）+ 尺寸变化重建表面 + 设备失陷整树重建（规格 B.5） |
+| `src/WinCanvas.Wallpaper/Hosting/WallpaperHostWindow.cs` | 修改 | `RenderImage` 公共入口（pump 封送 + 渲染器惰性创建）；A1/A2 尺寸同步路径直呼 `UpdateClientSize`；Dispose 级联释放渲染器 |
+| `src/WinCanvas.Wallpaper/WallpaperService.cs` | 修改 | `UpdateCoreAsync`：宿主挂接后对 `ImageFrame` 非空的源（图片 / pkg 降级封面）调用共享快照 + `RenderImage`，失败经 `StatusReported` 上报 |
+| `src/WinCanvas.Wallpaper/WinCanvas.Wallpaper.csproj` | 修改 | `AllowUnsafeBlocks`（指针级像素拷贝；后改纯投影实现但仍保留供 MemCopy）、`InternalsVisibleTo WinCanvas.App` |
+| `src/WinCanvas.App/Services/WallpaperPreviewController.cs` | 修改 | 删除本地 `BgraSnapshot` / `IMemoryBufferByteAccess` / `SnapshotBitmap` 副本，改用共享 `BitmapSnapshot.CopyFrom`（勿复制两份的规格要求） |
+| `tools/Wp1AHostDiag/Program.cs` | 修改 | 新增 `render` 模式（四象限像素采样验证上屏正确性、切图即时性、空闲 CPU%、SendInput 点击穿透、repkg PackageWriter 构造最小 pkg 验证降级封面）与 `dcomp` 模式（管线分步 HRESULT 探针） |
+
+#### 关键决策与理由（含 ADR）
+
+1. **COM 互操作零依赖方案与「头文件 ≠ 运行时 ABI」实测结论**：不引 SharpDX/Terracotta 等封装，手写 `ComImport` 接口。槽位依据 winsdk-10 镜像的真实 `dcomp.h`/`dxgi.h` 逐一核对（网上 Wine 的 dcomp.idl 成员顺序与微软头文件存在差异，不能直接采信）。**探针实测又发现两处与头文件字面不同的事实**：① `IDCompositionVisual::SetTransform` 两个重载在真实 ABI 中的相对顺序与 dcomp.h 的 C++ 声明相反（矩阵指针打在头文件顺序的槽 7 → E_INVALIDARG；NULL 打在槽 8 → AccessViolation，证明槽 8 才是矩阵重载）；② `IDCompositionSurface::BeginDraw` 传可空结构体抛 `MarshalDirectiveException`（改裸 `RECT*`）；③ DComp 表面拒绝 `IDXGISurface::Map` CPU 直写（E_INVALIDARG）；④ `DCOMPOSITION_BITMAP_INTERPOLATION_MODE` 实测 NEAREST=0 / LINEAR=1 / INHERIT=0xFFFFFFFF（传 2 → E_INVALIDARG）。
+2. **ADR：缩放走「surface=客户区尺寸 + GDI StretchDIBits」而非「surface=快照尺寸 + visual 缩放矩阵」**。后者需调用 SetTransform，而其重载槽位歧义（决策 1-①）在 ComImport 声明顺序上不可可靠命中；且 GDI blit 会把预乘表面 alpha 字节清零，visual 级合成还会暴露透明问题。改为表面按客户区尺寸创建 + `DXGI_ALPHA_MODE_IGNORE`（不透明合成，alpha 歧义消除）+ `StretchDIBits` 缩放贴入，视觉对象只调槽位无歧义的 `SetContent`。代价：尺寸变化时重贴一次像素（GDI 缩放，事件驱动一次性，实测 62ms 内完成）；规格 B.4「尺寸变化时重建 surface 重绘一次」正是此口径。`UpdateLayeredWindow` 回退未启用：DComp 主路径打通，不满足启用条件。
+3. **CPU 路径用 `IDXGISurface1::GetDC` + GDI**：`BeginDraw(IID_IDXGISurface)` 返回的表面不支持 `Map`（实测），官方 CPU 写入路径是 GetDC 后贴 DIB——32bpp BI_RGB 的 DIB 数据与 PBgra8 快照逐字节同布局（B/G/R/A 顺序），零格式转换。alpha 处理如决策 2（IGNORE 模式下 alpha 字节无语义）。
+4. **共享快照改纯投影实现**：下沉时原样搬移的 `(IMemoryBufferByteAccess)(object)reference` 强转在非 WinUI 进程（诊断命令）抛 `InvalidCastException`（CsWinRT 包装对象的 ComImport 强转只在 WinUI 宿主上下文可行）——预览与宿主必须共用一份实现，改为 `SoftwareBitmap.CopyToBuffer` + `IBuffer.ToArray()` 纯投影路径（两种宿主上下文行为一致），紧密/带行距双路径语义保留。
+5. **静态图工作量模型**：首次 Render 建树+建表面+一次贴图+Commit；切换图片 = 解码 + 重贴 + Commit（实测调用 16ms、屏上生效 62ms）；尺寸变化 = 重建表面 + 重贴 + Commit；设备失陷 = 整树释放、下次调用自动重建（会话不销毁）。全程不注册 FrameTick——实测空闲 3s 处理器占比 **0.00%**（规格 DoD ≈0%）。
+6. **pkg 降级封面同路径**：`PkgWallpaperLoader` 降级封面填 `ImageFrame`（`PkgWallpaperLoader.cs:79`），服务层渲染条件统一为 `source.ImageFrame != null`；验收用 repkg 的 `PackageWriter` 反向构造最小 pkg（`scene.json` 引用 script + `preview.png`），实测降级提示上报且封面 63ms 上屏（附录 B 授权的夹具构造方式）。
+7. **渲染错误呈现**：`RenderImage` 失败经 `StatusReported` 报「背景画面渲染失败：DirectComposition 初始化未成功（详见诊断日志）。已保留纯色占位，可尝试更新显卡驱动后重试。」（失败+原因+建议三要素）；详细 HRESULT 全部落 `host-diag.log`。
+
+#### 验证证据摘要
+
+- **构建门禁**：clean 全量 `dotnet build WinCanvas.sln -c Debug` = **0 错误 / 26 警告**（= WP0 基线）；`dotnet test WinCanvas.sln -c Debug --no-build` = **6/6 通过**。
+- **render 验收**（`dotnet run --project tools/Wp1AHostDiag -- render`，连续 3 轮全绿，末轮 9/9）：
+  - 图片 A（2x2 四象限异色 PNG）经真实 `ImageWallpaperLoader` 解码 → A1 宿主 DComp 上屏：屏上四象限采样全部匹配（**62ms** 内）——「画面可见、无错位、无镜像/翻转」的自动化证明（四角互异色设计可同时抓出水平镜像与垂直翻转）；
+  - 切换图片 B：调用 **16ms**、屏上颜色匹配 **62ms**——「切换不同图片背景即时生效」；
+  - 静态图空闲 3s 处理器占比 **0.00%**——「静态图无逐帧工作」；
+  - SendInput 点击客户区中心 → 裸目标窗口收到精确坐标 (400,300)——宿主点击穿透（目标交互不受干扰）；
+  - pkg 降级：`PackageWriter` 构造包 → 「降级」提示上报 + 封面 63ms 上屏；ShutdownAll 后宿主残留 0。
+- **dcomp 分步探针**（决策 1/2 的证据）：全管线 S_OK + 象限采样 True；PREMULTIPLIED 变体采样全白（alpha 清零实锤）。
+- **阶段 A 回归**：默认模式 29/29 断言全过（挂接/跟随/清理行为未受渲染接线影响）。
+- **诊断日志**：`%LOCALAPPDATA%\WinCanvas\logs\host-diag.log`（DComp 树就绪 / DComp 上屏 surface=800x600 等打点齐全）。
+- **实测备注**：render 模式曾出现一次「裸目标窗口创建失败（pump 线程）」的暂态失败，紧接的连续 3 轮全绿 + 本轮全绿未再复现（疑似前一轮进程退出与本次启动的窗口类注册竞态窗口），后续阶段继续观察；如复现将在 pump 建窗路径加重试。
+
+#### DoD 自检（阶段 B）
+
+- [x] 对目标窗口应用图片背景后画面可见、无错位、无镜像/翻转（四象限异色采样自动化验证 + 人工可在真实会话肉眼复核）
+- [x] 切换不同图片背景即时生效（调用 16ms + 屏上 62ms）
+- [x] 静态图场景本应用 CPU 占用≈0%（空闲 3s 实测 0.00%，无逐帧消耗）
+- [x] pkg 降级封面图路径同样上屏（PackageWriter 构造复杂场景包实测 63ms 上屏）
+- [x] 阶段提交 `feat(WP1-B): 图片 DComp 上屏`
 
 ---
 

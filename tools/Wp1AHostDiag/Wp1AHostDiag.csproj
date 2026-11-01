@@ -10,6 +10,8 @@
     <Nullable>enable</Nullable>
     <RootNamespace>Wp1AHostDiag</RootNamespace>
     <PlatformTarget>x64</PlatformTarget>
+    <!-- dcomp 探针需要指针写表面像素 -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

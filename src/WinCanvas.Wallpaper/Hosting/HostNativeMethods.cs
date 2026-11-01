@@ -393,20 +393,22 @@ internal static class HostNativeMethods
 
     /// <summary>
     /// 开始绘制：取客户区 DC 并填充 PAINTSTRUCT（含无效区）。必须在 WM_PAINT 中配对 EndPaintW。
+    /// 注意：真实导出名无 W/A 后缀（BeginPaint 是中性名），须用 EntryPoint 显式指回。
     /// </summary>
     /// <param name="hWnd">窗口句柄。</param>
     /// <param name="lpPaint">输出：绘制上下文结构。</param>
     /// <returns>设备上下文句柄；失败返回 NULL。</returns>
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", EntryPoint = "BeginPaint")]
     public static extern IntPtr BeginPaintW(IntPtr hWnd, ref PAINTSTRUCT lpPaint);
 
     /// <summary>
     /// 结束绘制：释放 DC 并清空无效区（不调用会导致系统持续发 WM_PAINT 空转）。
+    /// 真实导出名无 W/A 后缀，同上用 EntryPoint 指回。
     /// </summary>
     /// <param name="hWnd">窗口句柄。</param>
     /// <param name="lpPaint">BeginPaintW 输出的同一结构。</param>
     /// <returns>true = 成功。</returns>
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", EntryPoint = "EndPaint")]
     public static extern bool EndPaintW(IntPtr hWnd, ref PAINTSTRUCT lpPaint);
 
     /// <summary>

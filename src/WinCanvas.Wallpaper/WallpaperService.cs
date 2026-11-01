@@ -173,6 +173,19 @@ public sealed class WallpaperService : IWallpaperService
             // A2 语义：壁纸在目标「身后」，目标不透明时画面不可见 → 自动应用轻度透明（规格 A2.4）
             if (host.Mode == HostAttachMode.Follow)
                 await EnsureFollowVisibilityAsync(hwnd).ConfigureAwait(false);
+
+            // 图片 / pkg 降级封面（ImageFrame 非空，规格 B.3）：宿主 DComp 一次性上屏。
+            // 像素快照走与预览共用的 BitmapSnapshot.CopyFrom（规格 B.3 要求逻辑下沉共享，勿复制两份）；
+            // 静态图无逐帧工作——此后仅在尺寸变化 / 切换图片 / 设备失陷时由事件驱动重绘。
+            if (source.ImageFrame is { } frame)
+            {
+                var snapshot = BitmapSnapshot.CopyFrom(frame);
+                if (!host.RenderImage(snapshot))
+                {
+                    Report("背景画面渲染失败：DirectComposition 初始化未成功（详见诊断日志）。" +
+                           "已保留纯色占位，可尝试更新显卡驱动后重试。");
+                }
+            }
         }
 
         // 视频层：先把播放器交给订阅方挂输出面（MediaPlayerElement.SetMediaPlayer），

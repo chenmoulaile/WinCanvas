@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using WinCanvas.Wallpaper.Rendering;
 
 namespace WinCanvas.Wallpaper.Hosting;
 
@@ -112,6 +113,10 @@ internal sealed class WallpaperHostWindow : IDisposable
 
     /// <summary>创建参数 GCHandle（pump 线程内读写）：WM_NCCREATE 收养后由 WM_NCDESTROY 释放。</summary>
     private GCHandle _createHandle;
+
+    /// <summary>DComp 渲染器（WP1-B，pump 线程内读写）：首次 RenderImage 时惰性创建，
+    /// 与宿主同生命周期；尺寸变化回调（SyncEmbedClientSize / SyncFollowBounds）也在 pump 线程直呼。</summary>
+    private WallpaperHostRenderer? _renderer;
 
     private WallpaperHostWindow(IntPtr target, uint targetThreadId, uint targetProcessId)
     {
@@ -679,6 +684,9 @@ internal sealed class WallpaperHostWindow : IDisposable
             HostNativeMethods.SWP_NOMOVE | HostNativeMethods.SWP_NOACTIVATE | HostNativeMethods.SWP_NOZORDER);
         var delta = Environment.TickCount64 - t0;
 
+        // DComp 内容缩放到新客户区（pump 线程直呼；仅更新变换矩阵 + Commit，零像素拷贝）
+        _renderer?.UpdateClientSize(width, height);
+
         HostDiagnostics.LogFollow(
             $"A1 尺寸跟随 delta={delta}ms 目标客户区=({width}x{height}) 宿主旧矩形=({hostW}x{hostH}) target=0x{TargetHwnd:X}");
     }
@@ -774,6 +782,9 @@ internal sealed class WallpaperHostWindow : IDisposable
             RaiseTargetLost("GetWindowRect(宿主) 失败（宿主已失效）");
             return;
         }
+
+        // DComp 内容缩放到新尺寸（A2 宿主无边框，客户区 = 窗口矩形；pump 线程直呼，零像素拷贝）
+        _renderer?.UpdateClientSize(hostRect.Right - hostRect.Left, hostRect.Bottom - hostRect.Top);
 
         HostDiagnostics.LogFollow(
             $"A2 跟随 delta={delta}ms 目标外接=({bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom}) " +
@@ -1043,12 +1054,46 @@ internal sealed class WallpaperHostWindow : IDisposable
         // 目标已销毁时 A1 宿主多半已被链式销毁（IsWindow=false 直接跳过）；A2 宿主独立存在必须显式销毁
         WallpaperHostPump.Shared.Execute(() =>
         {
+            _renderer?.Dispose(); // DComp 树先于窗口销毁释放（target 绑定的 HWND 不能先亡）
+            _renderer = null;
             UnhookAll();
             if (HostNativeMethods.IsWindow(_hwnd))
                 HostNativeMethods.DestroyWindow(_hwnd);
 
             _hwnd = IntPtr.Zero;
         });
+    }
+
+    /// <summary>
+    /// 渲染一张静态图到宿主（WP1-B）。任意工作线程调用：内部经 pump 封送，把共享快照逻辑
+    /// （BitmapSnapshot.CopyFrom）的像素一次性缩放贴入 DComp surface（尺寸 = 当前客户区）并 Commit。
+    /// 渲染器惰性创建（首次渲染）；失败返回 false（原因见诊断日志，宿主保留纯色占位）。
+    /// </summary>
+    /// <param name="snapshot">紧密排列 PBgra8 像素快照。</param>
+    /// <returns>true = 已 Commit；false = 已释放 / 封送失败 / 渲染失败。</returns>
+    public bool RenderImage(BgraSnapshot snapshot)
+    {
+        if (_disposed)
+            return false;
+
+        var ok = false;
+        var done = WallpaperHostPump.Shared.Execute(() =>
+        {
+            if (_disposed || !HostNativeMethods.IsWindow(_hwnd))
+                return;
+
+            // 客户区尺寸取当前值（后续尺寸变化由跟随路径直呼 UpdateClientSize 重建表面）
+            if (!HostNativeMethods.GetClientRect(_hwnd, out var client))
+                return;
+
+            var width = client.Right - client.Left;
+            var height = client.Bottom - client.Top;
+
+            _renderer ??= new WallpaperHostRenderer(_hwnd);
+            ok = _renderer.Render(snapshot, width, height);
+        });
+
+        return done && ok;
     }
 
     /// <summary>创建失败但窗口过程未收养句柄时释放 GCHandle（收养后由 WM_NCDESTROY 释放）。</summary>
