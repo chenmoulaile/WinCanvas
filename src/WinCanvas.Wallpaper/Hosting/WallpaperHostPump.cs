@@ -109,11 +109,22 @@ internal sealed class WallpaperHostPump
         var handle = GCHandle.Alloc(wrapped);
         try
         {
-            if (!HostNativeMethods.PostThreadMessageW(
-                    _nativeThreadId, HostNativeMethods.WM_APP_PUMP_TASK, GCHandle.ToIntPtr(handle), IntPtr.Zero))
+            // PostThreadMessageW 在目标线程尚未创建消息队列时报 ERROR_INVALID_THREAD_ID——
+            // 线程的消息队列要到第一次消息函数调用才建立；虽然 pump 已在 ready 前自建队列，
+            // 仍保留有限重试兜底（WP1-C 实测存在启动窗口期投递失败）。
+            for (var attempt = 0; ; attempt++)
             {
-                handle.Free();
-                return false;
+                if (HostNativeMethods.PostThreadMessageW(
+                        _nativeThreadId, HostNativeMethods.WM_APP_PUMP_TASK, GCHandle.ToIntPtr(handle), IntPtr.Zero))
+                    break;
+
+                if (attempt >= 4)
+                {
+                    handle.Free();
+                    return false;
+                }
+
+                Thread.Sleep(20);
             }
 
             handle = default; // 所有权已移交 pump 端
@@ -135,12 +146,24 @@ internal sealed class WallpaperHostPump
             HostNativeMethods.PostThreadMessageW(_nativeThreadId, HostNativeMethods.WM_QUIT, IntPtr.Zero, IntPtr.Zero);
     }
 
-    /// <summary>pump 线程主体：注册线程 Id → GetMessageW 循环 → 派发任务 / 窗口消息。</summary>
+    /// <summary>pump 线程主体：初始化 COM → 注册线程 Id → 强制建消息队列 → 就绪信号 → GetMessageW 循环。</summary>
     private void PumpLoop()
     {
+        // 关键：COM 初始化必须先行——WinRT 对象激活（如视频组合的 new Compositor()）要求线程
+        // 处于 COM apartment；裸线程直接激活会抛 UnauthorizedAccessException（WP1-C 实测）。
+        // STA(0x2)：WinRT 组合对象要求 STA 语义；S_FALSE(已初始化) / RPC_E_CHANGED_MODE 视为可继续。
+        var coInitHr = CoInitializeEx(IntPtr.Zero, 0x2 /* COINIT_APARTMENTTHREADED */);
+        if (coInitHr != 0 && coInitHr != 1 /* S_FALSE */)
+            HostDiagnostics.Log($"pump 线程 CoInitializeEx 失败 hr=0x{coInitHr:X8}（WinRT 激活可能不可用）");
+
         _managedThreadId = Environment.CurrentManagedThreadId;
         // PostThreadMessageW 的投递目标必须是 Win32 原生线程 Id（非托管 Thread.ManagedThreadId）
         _nativeThreadId = GetCurrentThreadId();
+
+        // 关键：先强制创建本线程的消息队列再发就绪信号——线程队列在首次消息函数调用时才建立，
+        // 若先 Set 就绪、调用方立即 PostThreadMessageW，会撞上队列未建的竞态窗口
+        //（WP1-C 实测 ERROR_INVALID_THREAD_ID 间歇性失败，见 WORKLOG）。
+        _ = PeekMessageW(out _, IntPtr.Zero, 0, 0, 0 /* PM_NOREMOVE */);
         _ready.Set();
 
         while (HostNativeMethods.GetMessageW(out var msg, IntPtr.Zero, 0, 0) > 0)
@@ -173,4 +196,38 @@ internal sealed class WallpaperHostPump
     /// <returns>当前线程的 Win32 线程 Id。</returns>
     [DllImport("kernel32.dll")]
     private static extern uint GetCurrentThreadId();
+
+    /// <summary>
+    /// 非移除式消息探测（pump 启动时调用一次，强制创建线程消息队列）。
+    /// </summary>
+    /// <param name="msg">输出：取到的消息（PM_NOREMOVE 下不取走）。</param>
+    /// <param name="hWnd">过滤窗口（NULL）。</param>
+    /// <param name="min">最低消息 Id。</param>
+    /// <param name="max">最高消息 Id。</param>
+    /// <param name="remove">PM_NOREMOVE(0) / PM_REMOVE(1)。</param>
+    /// <returns>true = 有消息；false = 无消息。</returns>
+    [DllImport("user32.dll")]
+    private static extern bool PeekMessageW(out PeekMsg msg, IntPtr hWnd, uint min, uint max, uint remove);
+
+    /// <summary>
+    /// 当前线程 COM 初始化（pump 启动时调用：WinRT 激活要求线程处于 COM apartment）。
+    /// </summary>
+    /// <param name="reserved">必须为 NULL。</param>
+    /// <param name="coInit"> apartment 模型（COINIT_APARTMENTTHREADED = 0x2）。</param>
+    /// <returns>S_OK(0) 新初始化；S_FALSE(1) 已按此模型初始化；RPC_E_CHANGED_MODE 已按其他模型初始化。</returns>
+    [DllImport("ole32.dll")]
+    private static extern int CoInitializeEx(IntPtr reserved, uint coInit);
+
+    /// <summary>MSG 结构（PeekMessageW 出参；与 user32 MSG 同布局）。</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PeekMsg
+    {
+        public IntPtr Hwnd;     // 目标窗口（线程消息为 NULL）
+        public uint Message;    // 消息 Id
+        public IntPtr WParam;   // 字参数
+        public IntPtr LParam;   // 长参数
+        public uint Time;       // 投递时间
+        public int PtX;         // 光标 x
+        public int PtY;         // 光标 y
+    }
 }

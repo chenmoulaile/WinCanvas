@@ -93,6 +93,14 @@ internal static class Program
         if (args.Contains("dcomp"))
             return RunDcompProbe();
 
+        // winrt 模式：CsWinRT 互操作面探测（MarshalInterface/CastExtensions）+ 系统 winmd IID 提取
+        if (args.Contains("winrt"))
+            return RunWinrtProbe();
+
+        // video 模式：WP1-C 视频上屏验收（组合呈现产品路径：流动/比例/全屏暂停/资源释放）
+        if (args.Contains("video"))
+            return await RunVideoProbeAsync(args);
+
         Console.WriteLine("== WP1 阶段 A 挂接诊断 ==");
 
         // 目标定位一律按「spawn 前快照 → 新出现的指定类名窗口」差集，不依赖 pid
@@ -369,19 +377,343 @@ internal static class Program
         return FinishChecks();
     }
 
-    /// <summary>汇总打印全部断言并返回退出码（render 模式收尾；与 Main 的汇总口径一致）。</summary>
-    private static int FinishChecks()
+    /// <summary>
+    /// CsWinRT 互操作面探测（winrt 模式，阶段 C 主路径可行性评估）：
+    /// ① 反射 WinRT.Runtime 的 MarshalInterface&lt;T&gt; / CastExtensions 公开方法（原生 IInspectable
+    ///    ABI 指针 → 托管 IDirect3DSurface 的官方通道是否存在）；
+    /// ② 用 System.Reflection.Metadata 解析系统 winmd（System32\WinMetadata），提取
+    ///    IDirect3DSurface 与 ICompositorDesktopInterop 的接口 GUID（ComImport 声明/ABI 直调需要）。
+    /// </summary>
+    private static int RunWinrtProbe()
     {
-        Console.WriteLine();
-        Console.WriteLine("== 断言汇总 ==");
-        var failed = 0;
-        foreach (var c in _checks)
-        {
-            if (!c.Pass)
-                failed++;
+        Console.WriteLine("== CsWinRT 互操作面探测 ==");
 
-            Console.WriteLine($"[{(c.Pass ? "PASS" : "FAIL")}] {c.Name}：{c.Detail}");
+        // ① WinRT.Runtime 公开互操作通道
+        var marshalType = typeof(WinRT.IObjectReference).Assembly.GetType("WinRT.MarshalInterface`1");
+        if (marshalType != null)
+        {
+            Console.WriteLine($"MarshalInterface<T> 存在（{marshalType.AssemblyQualifiedName}）");
+            foreach (var m in marshalType.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+                Console.WriteLine($"   method: {m}");
         }
+        else
+        {
+            Console.WriteLine("MarshalInterface<T> 不存在");
+        }
+
+        var castType = typeof(WinRT.IObjectReference).Assembly.GetType("WinRT.CastExtensions");
+        if (castType != null)
+        {
+            Console.WriteLine("CastExtensions 存在：");
+            foreach (var m in castType.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+                Console.WriteLine($"   method: {m}");
+        }
+        else
+        {
+            Console.WriteLine("CastExtensions 不存在");
+        }
+
+        var inspectableType = typeof(WinRT.IObjectReference).Assembly.GetType("WinRT.MarshalInspectable`1");
+        if (inspectableType != null)
+        {
+            Console.WriteLine("MarshalInspectable<T> 存在：");
+            foreach (var m in inspectableType.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+                Console.WriteLine($"   method: {m}");
+        }
+        else
+        {
+            Console.WriteLine("MarshalInspectable<T> 不存在");
+        }
+
+        // ② 系统 winmd 的接口 IID 提取
+        var metadataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WinMetadata");
+        foreach (var file in Directory.EnumerateFiles(metadataDir, "*.winmd"))
+        {
+            try
+            {
+                using var fs = File.OpenRead(file);
+                unsafe
+                {
+                    using var pe = new System.Reflection.PortableExecutable.PEReader(fs);
+                    if (!pe.HasMetadata)
+                        continue;
+
+                    var reader = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(pe);
+                    foreach (var handle in reader.TypeDefinitions)
+                    {
+                        var def = reader.GetTypeDefinition(handle);
+                        var ns = def.Namespace.IsNil ? "" : reader.GetString(def.Namespace);
+                        var name = reader.GetString(def.Name);
+                        var full = ns.Length > 0 ? $"{ns}.{name}" : name;
+
+                        if (full is not ("Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface"
+                            or "Windows.UI.Composition.Interop.ICompositorDesktopInterop"
+                            or "Windows.Graphics.DirectX.Direct3D11.IDirect3DDevice"))
+                        {
+                            continue;
+                        }
+
+                        foreach (var attr in def.GetCustomAttributes())
+                        {
+                            var ctor = reader.GetCustomAttribute(attr);
+                            string attrName;
+                            if (ctor.Constructor.Kind == System.Reflection.Metadata.HandleKind.MethodDefinition)
+                            {
+                                attrName = reader.GetString(reader.GetMethodDefinition((System.Reflection.Metadata.MethodDefinitionHandle) ctor.Constructor).Name);
+                            }
+                            else if (ctor.Constructor.Kind == System.Reflection.Metadata.HandleKind.MemberReference)
+                            {
+                                var memberRef = reader.GetMemberReference((System.Reflection.Metadata.MemberReferenceHandle) ctor.Constructor);
+                                attrName = memberRef.Parent.Kind == System.Reflection.Metadata.HandleKind.TypeReference
+                                    ? reader.GetString(reader.GetTypeReference((System.Reflection.Metadata.TypeReferenceHandle) memberRef.Parent).Name)
+                                    : "";
+                            }
+                            else
+                            {
+                                continue;
+                            }
+
+                            if (!attrName.Contains("GuidAttribute"))
+                                continue;
+
+                            // GuidAttribute ctor blob：prolog(0x00) + uint + ushort + ushort + 8×byte
+                            var blobReader = reader.GetBlobReader(ctor.Value);
+                            blobReader.ReadByte(); // prolog
+                            var a = blobReader.ReadUInt32();
+                            var b = blobReader.ReadUInt16();
+                            var c = blobReader.ReadUInt16();
+                            var g = new byte[8];
+                            for (var i = 0; i < 8; i++)
+                                g[i] = blobReader.ReadByte();
+
+                            var guid = new Guid((int) a, (short) b, (short) c, g);
+                            Console.WriteLine($"IID {full} = {guid:D}（{Path.GetFileName(file)}）");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"解析 {file} 失败：{ex.Message}");
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// 视频上屏产品路径验收（video 模式，阶段 C）：
+    /// ① MediaComposition 生成测试 mp4：两段异向双色 320x240 clip（各 1.5s）——
+    ///    左半区颜色随片段切换（红 ↔ 蓝）证明帧流动；半区构图（左右分割）用于实测 MF 的比例语义。
+    /// ② 裸目标窗口（pump 线程）+ WallpaperService.UpdateWallpaperAsync(mp4)：
+    ///    产品接线全链路（帧服务器 MediaPlayer → VideoFrameAvailable → 组合交换链 Present → Commit）。
+    /// ③ 验收点：帧计数推进（流动）、加边 vs 拉伸实测（比例语义，ADR 依据）、
+    ///    全屏前台窗口 → 视频暂停（帧计数冻结）→ 退出全屏恢复（DynamicFrameRateController 联动）、
+    ///    切图片 → 帧计数停止（旧播放器随会话释放）、ShutdownAll → 宿主清零。
+    /// 退出码 0 = 全部断言通过。
+    /// </summary>
+    private static async Task<int> RunVideoProbeAsync(string[] args)
+    {
+        Console.WriteLine("== WP1-C 视频上屏验收（产品路径）==");
+
+        // ① 造测试视频：两段 320x240 半区双色 clip（各 1.5s）→ 3s mp4
+        //    clip1 = 左红右白；clip2 = 左蓝右白——左半区颜色随片段切换（帧流动信号），几何恒定（比例信号）
+        var videoPath = Path.Combine(Path.GetTempPath(), $"wp1c-test-{Guid.NewGuid():N}.mp4");
+        var clipPaths = new List<string>();
+        var comp = new Windows.Media.Editing.MediaComposition();
+        foreach (var (lr, lg, lb, rr, rg, rb) in new[]
+                 {
+                     ((byte) 255, (byte) 0, (byte) 0, (byte) 255, (byte) 255, (byte) 255),
+                     ((byte) 0, (byte) 0, (byte) 255, (byte) 255, (byte) 255, (byte) 255),
+                 })
+        {
+            var clipPath = Path.Combine(Path.GetTempPath(), $"wp1c-clip-{Guid.NewGuid():N}.png");
+            using (var image = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(320, 240))
+            {
+                for (var y = 0; y < 240; y++)
+                    for (var x = 0; x < 320; x++)
+                        image[x, y] = x < 160
+                            ? new SixLabors.ImageSharp.PixelFormats.Rgba32(lr, lg, lb, 255)
+                            : new SixLabors.ImageSharp.PixelFormats.Rgba32(rr, rg, rb, 255);
+
+                await image.SaveAsPngAsync(clipPath);
+            }
+
+            clipPaths.Add(clipPath);
+            var clipFile = await Windows.Storage.StorageFile.GetFileFromPathAsync(clipPath);
+            comp.Clips.Add(await Windows.Media.Editing.MediaClip.CreateFromImageFileAsync(clipFile, TimeSpan.FromSeconds(1.5)));
+        }
+
+        var tempFolder = await Windows.Storage.StorageFolder.GetFolderFromPathAsync(Path.GetTempPath());
+        var outFile = await tempFolder.CreateFileAsync(
+            Path.GetFileName(videoPath), Windows.Storage.CreationCollisionOption.ReplaceExisting);
+        var renderInfo = await comp.RenderToFileAsync(outFile);
+        Console.WriteLine($"① 测试视频生成：{renderInfo}（None = 成功）-> {videoPath}");
+        if (renderInfo != Windows.Media.Transcoding.TranscodeFailureReason.None)
+            return 1;
+
+        // ② 裸目标窗口（pump 线程，与宿主/渲染器同线程）
+        IntPtr target = IntPtr.Zero;
+        var created = WallpaperHostPump.Shared.Execute(
+            () => target = BareTargetWindow.CreateOnCurrentThread(), timeoutMs: 5000);
+        if (!created || target == IntPtr.Zero)
+        {
+            Console.WriteLine($"裸目标窗口创建失败（Execute 回执 = {created}，hwnd = 0x{target:X}，" +
+                              $"pump 存活 = {WallpaperHostPump.Shared.IsRunning}）");
+            foreach (var p in clipPaths)
+                File.Delete(p);
+
+            File.Delete(videoPath);
+            return 1;
+        }
+
+        SetWindowPos(target, new IntPtr(-1), 100, 100, 800, 600, 0x0010);
+        Thread.Sleep(400);
+
+        // ③ 产品接线：视频组合呈现（GetSurface + DesktopWindowTarget + SpriteVisual 加边）
+        var service = new WinCanvas.Wallpaper.WallpaperService();
+        Windows.Media.Playback.MediaPlayer? playerRef = null;
+        service.VideoPlayerReady += (_, player) =>
+        {
+            playerRef = player;
+            player.MediaFailed += (_, e) => Console.WriteLine($"   [MediaFailed] {e.Error} {e.ErrorMessage}");
+            player.MediaOpened += (_, _) => Console.WriteLine("   [MediaOpened]");
+            player.PlaybackSession.PlaybackStateChanged += (_, _) =>
+                Console.WriteLine($"   [PlaybackState] {player.PlaybackSession.PlaybackState} @ {player.PlaybackSession.Position}");
+        };
+        var reports = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        service.StatusReported += reports.Enqueue;
+
+        var applyT0 = Environment.TickCount64;
+        await service.UpdateWallpaperAsync(target, videoPath);
+        Console.WriteLine($"② UpdateWallpaperAsync(视频) 完成，耗时 = {Environment.TickCount64 - applyT0}ms");
+
+        // 等待 MediaOpened + 首帧
+        Thread.Sleep(1200);
+
+        // ④ 流动验证：采样客户区左 1/4 处颜色（clip1 红 / clip2 蓝 随时间切换）
+        var seenColors = new List<string>();
+        var seenValues = new HashSet<string>();
+        for (var i = 0; i < 30; i++)
+        {
+            var c = SamplePoint(target, 200, 300);
+            var key = $"{c.r},{c.g},{c.b}";
+            if (seenValues.Add(key))
+                seenColors.Add(key);
+
+            Thread.Sleep(150);
+        }
+
+        var flowPass = seenColors.Count >= 2; // 至少观察到两个不同帧内容（帧推进）
+        Console.WriteLine($"④ 左 1/4 处颜色序列 = [{string.Join(" -> ", seenColors)}]（应随片段切换变化）");
+        AddCheck("video：帧流动（颜色随时间切换）", flowPass, $"颜色序列 {seenColors.Count} 种（应 ≥2：红/蓝随片段切换）");
+
+        // ⑤ 比例语义实测：窗口改 800x800（1:1 目标 + 4:3 视频）
+        //    组合呈现按视频比例加边 → x=5% 处为恒定底色（宿主纯色蓝 30,80,180）；拉伸则跟随内容色变化
+        SetWindowPos(target, IntPtr.Zero, 100, 100, 800, 800, 0x0010 | 0x0004);
+        Thread.Sleep(800);
+        var bandSamples = new List<string>();
+        var contentSamples = new List<string>();
+        for (var i = 0; i < 8; i++)
+        {
+            bandSamples.Add(ColorKey(SamplePoint(target, 40, 400)));
+            contentSamples.Add(ColorKey(SamplePoint(target, 200, 400)));
+            var sess = playerRef?.PlaybackSession;
+            Console.WriteLine($"   采样{i}: 播放态={sess?.PlaybackState} 位置={sess?.Position}");
+            Thread.Sleep(400);
+        }
+
+        var bandStable = bandSamples.Distinct().Count() == 1;
+        var contentChanged = contentSamples.Distinct().Count() >= 2;
+        var aspectMode = bandStable && contentChanged ? "加边（保持比例）" : (bandStable ? "恒定（内容未变？）" : "拉伸");
+        Console.WriteLine($"⑤ 800x800 采样：边带 x=5% = [{string.Join(" / ", bandSamples.Distinct())}]，" +
+                          $"内容 x=25% = [{string.Join(" / ", contentSamples.Distinct())}] → 判定：{aspectMode}");
+        AddCheck("video：比例正确（等比加边，禁止拉伸）", bandStable && contentChanged,
+            $"边带恒定 = {bandStable}，内容变化 = {contentChanged}（判定：{aspectMode}）");
+
+        // ⑥ 全屏联动：前台无边框置顶窗口盖满主屏 → 全屏检测（会话渲染循环）→ player.Pause → 画面定格
+        //    断言口径（颜色稳定性）：2s 采样窗必然跨越 1.5s 的片段切换边界——播放中必观察到颜色变化，
+        //    暂停中必恒定。窗口尺寸保持 800x800（左 1/4 = 200,400；边带不动不影响该点）。
+        IntPtr cover = IntPtr.Zero;
+        var coverCreated = WallpaperHostPump.Shared.Execute(() =>
+        {
+            cover = BareTargetWindow.CreateOnCurrentThread();
+            _ = SetWindowPos(cover, new IntPtr(-1), 0, 0, GetSystemMetrics(0), GetSystemMetrics(1), 0x0010);
+        }, timeoutMs: 5000);
+        _ = SetForegroundWindow(cover);
+        Thread.Sleep(1500); // 全屏检测节流 250ms + 暂停生效
+
+        var fullscreenColors = new HashSet<string>();
+        for (var i = 0; i < 13; i++)
+        {
+            fullscreenColors.Add(ColorKey(SamplePoint(target, 200, 400)));
+            Thread.Sleep(150);
+        }
+
+        var pausedFrozen = fullscreenColors.Count == 1;
+        Console.WriteLine($"⑥ 全屏盖窗 2s 采样：{fullscreenColors.Count} 种颜色（应 1 种 = 定格）");
+        AddCheck("video：全屏前台 → 视频暂停（画面定格）", coverCreated && pausedFrozen,
+            $"2s 采样窗颜色种类 = {fullscreenColors.Count}（应 1：2s 必跨越 1.5s 的片段边界）");
+
+        // 退出全屏：撤盖窗 → 恢复播放 → 颜色恢复切换
+        _ = WallpaperHostPump.Shared.Execute(() => DestroyWindow(cover), timeoutMs: 5000);
+        Thread.Sleep(1500);
+        var resumeColors = new HashSet<string>();
+        for (var i = 0; i < 13; i++)
+        {
+            resumeColors.Add(ColorKey(SamplePoint(target, 200, 400)));
+            if (i % 4 == 0)
+            {
+                var sess = playerRef?.PlaybackSession;
+                Console.WriteLine($"   恢复采样{i}: 播放态={sess?.PlaybackState} 位置={sess?.Position}");
+            }
+
+            Thread.Sleep(150);
+        }
+
+        Console.WriteLine($"   退出全屏 2s 采样：{resumeColors.Count} 种颜色（应 ≥2 = 恢复）");
+        AddCheck("video：退出全屏 → 恢复播放", resumeColors.Count >= 2,
+            $"2s 采样窗颜色种类 = {resumeColors.Count}（应 ≥2）");
+
+        // ⑦ 资源释放：切图片 → 旧视频播放器随会话 Dispose，组合视觉消失（左 1/4 处恒为图片色）
+        var pngA = Path.Combine(Path.GetTempPath(), $"wp1c-img-{Guid.NewGuid():N}.png");
+        using (var image = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(64, 64,
+                   new SixLabors.ImageSharp.PixelFormats.Rgba32(30, 80, 180, 255)))
+        {
+            await image.SaveAsPngAsync(pngA);
+        }
+
+        await service.UpdateWallpaperAsync(target, pngA);
+        Thread.Sleep(600);
+        var imageColors = new HashSet<string>();
+        for (var i = 0; i < 8; i++)
+        {
+            imageColors.Add(ColorKey(SamplePoint(target, 200, 400)));
+            Thread.Sleep(300);
+        }
+
+        var imageStable = imageColors.Count == 1 && imageColors.First() == "30,80,180";
+        Console.WriteLine($"⑦ 切图片后左 1/4 采样：[{string.Join(" / ", imageColors)}]（应恒为图片色 30,80,180）");
+        AddCheck("video：切图片 → 视频消失（播放器/组合树释放）", imageStable,
+            imageStable ? "颜色恒定 = 视频视觉已移除" : "视频内容仍存在或颜色异常");
+
+        // ⑧ 收尾清理
+        service.ShutdownAll();
+        var leftovers = WallpaperHostWindow.CountAliveHosts();
+        AddCheck("video：ShutdownAll 清零", leftovers == 0, $"宿主残留 = {leftovers}（应 0）");
+
+        foreach (var p in clipPaths)
+            File.Delete(p);
+
+        File.Delete(pngA);
+        var externalVideo = args.SkipWhile(a => a != "video").Skip(1).FirstOrDefault(File.Exists);
+        if (externalVideo == null)
+            File.Delete(videoPath);
+
+        var failed = _checks.Count(c => !c.Pass);
+        Console.WriteLine();
+        foreach (var c in _checks)
+            Console.WriteLine($"[{(c.Pass ? "PASS" : "FAIL")}] {c.Name}：{c.Detail}");
 
         Console.WriteLine(failed == 0 ? "\n全部通过。" : $"\n失败 {failed} 项。");
         return failed == 0 ? 0 : 1;
@@ -675,6 +1007,9 @@ internal static class Program
 
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int index);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hwnd);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetDC(IntPtr hwnd);
@@ -1271,4 +1606,42 @@ internal static class Program
     }
 
     private static void AddCheck(string name, bool pass, string detail) => _checks.Add(new Check(name, pass, detail));
+
+    /// <summary>汇总打印全部断言并返回退出码（render / video 模式收尾；与 Main 的汇总口径一致）。</summary>
+    private static int FinishChecks()
+    {
+        Console.WriteLine();
+        Console.WriteLine("== 断言汇总 ==");
+        var failed = 0;
+        foreach (var c in _checks)
+        {
+            if (!c.Pass)
+                failed++;
+
+            Console.WriteLine($"[{(c.Pass ? "PASS" : "FAIL")}] {c.Name}：{c.Detail}");
+        }
+
+        Console.WriteLine(failed == 0 ? "\n全部通过。" : $"\n失败 {failed} 项。");
+        return failed == 0 ? 0 : 1;
+    }
+
+    /// <summary>屏幕单点采样（GetPixel），返回 (R,G,B)。</summary>
+
+    /// <summary>颜色三元组 → 采样键字符串（"r,g,b"；避免 string.Join 误绑元组 ToString）。</summary>
+    private static string ColorKey((int r, int g, int b) c) => $"{c.r},{c.g},{c.b}";
+    private static (int r, int g, int b) SamplePoint(IntPtr hwnd, int clientX, int clientY)
+    {
+        var pt = new POINT { X = clientX, Y = clientY };
+        ClientToScreen(hwnd, ref pt);
+        var dc = GetDC(IntPtr.Zero);
+        try
+        {
+            var c = GetPixel(dc, pt.X, pt.Y);
+            return ((int) (c & 0xFF), (int) ((c >> 8) & 0xFF), (int) ((c >> 16) & 0xFF));
+        }
+        finally
+        {
+            _ = ReleaseDC(IntPtr.Zero, dc);
+        }
+    }
 }

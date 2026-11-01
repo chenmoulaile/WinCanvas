@@ -95,6 +95,7 @@
 ## 2. WP1 壁纸真实上屏
 
 
+
 ### 2.A 阶段 A：宿主窗口与双路径挂接（2026-11-01）
 
 **状态**：完成。提交：`feat(WP1-A): 宿主窗口与双路径挂接`（分支 `feat/complete-w0-w5`）。先不渲染，宿主以纯色（深蓝 RGB(30,80,180)，`HostNativeMethods.HostPhaseAFillColor`）GDI 填充验证挂接正确性；阶段 B 换 DComp 渲染时窗口类、挂接与跟随逻辑保留复用。
@@ -215,6 +216,67 @@
 - [x] 静态图场景本应用 CPU 占用≈0%（空闲 3s 实测 0.00%，无逐帧消耗）
 - [x] pkg 降级封面图路径同样上屏（PackageWriter 构造复杂场景包实测 63ms 上屏）
 - [x] 阶段提交 `feat(WP1-B): 图片 DComp 上屏`
+
+---
+
+### 2.C 阶段 C：视频上屏（组合呈现 ADR）（2026-11-01）
+
+**状态**：完成。提交：`feat(WP1-C): 视频帧服务器上屏`（分支 `feat/complete-w0-w5`）。
+**ADR 结论先行**：主路径（帧服务器 `CopyFrameToVideoSurface`）在实测中受阻（详见决策 1），按规格授权采纳**备选路径**——`MediaPlayer.GetSurface(compositor)` + SpriteVisual + `ICompositorDesktopInterop.CreateDesktopWindowTarget`（组合呈现）：视频由 MF 直接渲染进组合表面，**零拷贝、零逐帧代码、零轮询**；帧率联动复用既有状态机（暂停态 → `player.Pause()` → 画面定格）。
+
+#### 改动清单
+
+| 文件 | 动作 | 说明 |
+| --- | --- | --- |
+| `src/WinCanvas.Wallpaper/Hosting/CompositionVideoPresenter.cs` | 新增 | 视频组合呈现器：自持专用 DispatcherQueue 线程（实测约束，决策 4）；`GetSurface(compositor)` → SurfaceBrush → SpriteVisual → `CreateDesktopWindowTarget`；按 NaturalVideo 尺寸等比加边居中（禁止拉伸）；Detach 幂等释放 |
+| `src/WinCanvas.Wallpaper/Hosting/WallpaperHostRenderer.cs` | 修改 | 移除交换链实验产物（ADR 决策 1），回归纯图像渲染器；类注释指向视频呈现器 |
+| `src/WinCanvas.Wallpaper/Hosting/WallpaperHostWindow.cs` | 修改 | `BeginVideo(player)` / `UpdateVideoLayout` / `EndVideo`（pump 封送）；视频模式客户区变化时重算加边布局；Dispose 级联释放 |
+| `src/WinCanvas.Wallpaper/WallpaperService.cs` | 修改 | 视频会话接线：BeginVideo + **显式 Play()**（决策 5）；切出视频时 EndVideo |
+| `src/WinCanvas.Wallpaper/Loaders/VideoWallpaperLoader.cs` | 修改 | 明确注释组合呈现路径不启用帧服务器（`IsVideoFrameServerEnabled` 保持 false） |
+| `src/WinCanvas.Wallpaper/Hosting/WallpaperHostPump.cs` | 修改 | 两处启动加固（决策 6）：pump 启动先 `CoInitializeEx(STA)`（WinRT 激活要求 apartment）+ 首条 PeekMessage 强制建消息队列（消除 `PostThreadMessageW` ERROR_INVALID_THREAD_ID 竞态）+ `Execute` 投递失败有限重试 |
+| `src/WinCanvas.Wallpaper/Hosting/DcompNativeMethods.cs` | 修改 | 移除主路径考察产物（交换链/CopyFrameToVideoSurface 互操作声明），保留结论于 WORKLOG 与 git 历史 |
+| `tools/Wp1AHostDiag/Program.cs` | 修改 | `video` 模式改走产品路径验收（流动/比例/全屏暂停/恢复/资源释放）；新增 `winrt` 模式（CsWinRT 互操作面 + 系统 winmd IID 提取）；暂存过的 `swapchain` 矩阵探针完成使命后移除（结论留 WORKLOG） |
+
+#### 关键决策与理由（含 ADR）
+
+1. **ADR：视频上屏路线——主路径（帧服务器 CopyFrameToVideoSurface）受阻，采纳备选路径（GetSurface + CompositionSurface）**。主路径考察过程与实测证据（全部留痕于 git 历史的探针代码与诊断日志）：
+   - **DComp surface 中转**：逐帧 `BeginDraw/EndDraw` 在第 2 帧起稳定返回 `E_OUTOFMEMORY(0x8007000E)`（第 1 帧成功）——DComp 表面非为视频级更新频率设计；pump 同线程复现，排除线程因素。
+   - **组合交换链中转**：`CreateSwapChainForComposition` 全链路 S_OK（`SetContent(交换链)` / `GetBuffer` / `Present` / `Commit`），但 `CopyFrameToVideoSurface(后备缓冲包装)` 在 MF 内部 **AccessViolation**（进程崩溃，不可捕获）——MF 对外部翻转模型缓冲的跨设备拷贝在本机驱动栈上不安全。
+   - **互操作细节实测**（对后续阶段有价值，git 历史可考）：`CreateDirect3DSurface` 的真实导出名是 `CreateDirect3D11SurfaceFromDXGISurface`；`IDirect3DSurface` IID = `f4a14600-c10b-9413-46be-e37abf15eaf5`（系统 winmd 元数据提取）；组合交换链 `Scaling` 在本机只接受 `STRETCH(0)`（`NONE(1)` → INVALID_CALL）；ComImport 的 `object` 参数默认按 VARIANT 封送（需显式 `MarshalAs(UnmanagedType.IUnknown)`）。
+   - **备选路径优势**：`GetSurface(compositor)` 是 MF 官方组合呈现通道（帧在 MF 内部直接进组合表面），无跨设备拷贝、无逐帧 CPU/GDI 工作；帧率联动天然由 `player.Pause()` 承担。规格明确授权该备选（「两条路 API 均真实存在，择一实现，在 WORKLOG 写 ADR」）。
+2. **组合对象要求创建线程持有 DispatcherQueue**：`new Compositor()` 在无 DQ 的 pump 线程抛 `UnauthorizedAccessException`（官方报错文案 "The caller must initialize DispatcherQueue on this thread before this operation"）。修复：presenter 自持 `DispatcherQueueController.CreateOnDedicatedThread()` 专用线程，全部组合操作经 `TryEnqueue` 同步封送（TryEnqueue+信号等待，返回即完成）。
+3. **渲染循环 `StateChanged` 仅在暂停分支触发**：新视频会话的 `player.Play()` 若依赖状态迁移事件则永不执行（活跃态无迁移）。修复：服务层在视频附着成功后按 `Controller.ShouldRender` 显式 `Play()`；后续暂停/恢复仍由既有迁移驱动。此发现同步记入渲染循环注释。
+4. **pump 线程两处启动加固**（视频排障期间定位的真实缺陷，与视频无直接关系但影响全宿主）：① 线程消息队列在首次消息函数调用时才建立，`_ready.Set()` 早于首条 `PeekMessage` 会产生 `PostThreadMessageW → ERROR_INVALID_THREAD_ID` 竞态窗口（间歇性「裸目标窗口创建失败」复现两次）——启动时先 Peek 强制建队 + `Execute` 投递失败有限重试；② pump 线程补 `CoInitializeEx(STA)`——WinRT 激活要求 apartment。
+5. **帧率联动**：组合呈现下无帧事件可丢弃；联动 = 既有状态机（全屏/用户暂停 → `player.Pause()` → 组合画面定格；恢复 → `Play()`）。探针以「颜色稳定性」验证：2s 采样窗必跨越 1.5s 的片段边界——播放中必变色、暂停中必恒定。
+6. **比例正确**：SpriteVisual 尺寸/偏移按 `NaturalVideoWidth/Height` 在客户区内等比缩放 + 居中加边（contain 语义），加边区透出宿主纯色底。实测 4:3 视频入 1:1 客户区：边带恒定、内容随片段变化、无拉伸。
+
+#### 验证证据摘要
+
+- **构建门禁**：clean 全量 `dotnet build WinCanvas.sln -c Debug` = **0 错误 / 26 警告**（= 基线）；`dotnet test` = **6/6 通过**。
+- **video 验收**（`dotnet run --project tools/Wp1AHostDiag -- video`，产品路径，全绿复现两轮）：
+  - 帧流动：左 1/4 采样颜色序列 2 种（红/蓝随片段切换，循环播放）；
+  - 比例正确：800x800 客户区 + 4:3 视频 → 边带 (0,0,0) 恒定 + 内容红/蓝变化 = 等比加边、无拉伸；
+  - 全屏前台 → 画面定格（2s 窗 1 色）；退出全屏 → 恢复（2 色）——DynamicFrameRateController 联动生效；
+  - 切图片 → 视频视觉消失（左 1/4 恒为图片色 30,80,180）= 播放器/组合树随会话释放；
+  - ShutdownAll → 宿主残留 0。
+- **回归**：阶段 A 默认电池 29/29、阶段 B render 电池 9/9、service 冒烟 3/3 全部通过。
+- **主路径考察证据**：git 历史中的探针代码（`swapchain` 矩阵模式、帧服务器手工管线）+ 诊断日志（E_OUTOFMEMORY / CreateSwapChainForComposition 矩阵 / AV 堆栈）。
+- **撕裂**：组合呈现由 DWM 直接合成（等效垂直同步），且宿主跟随沿用阶段 A 已验证的 ≤100ms 路径——自动化以「resize 后内容仍在加边正确位置」间接覆盖；无撕裂的观感项留人工清单。
+
+#### 人工验证清单（自动化无法覆盖，需真实交互会话确认）
+
+- [ ] 真实视频壁纸（高分辨率 H.264/HEVC）在目标窗口内流动的观感流畅度（自动化以颜色切换 + 组合呈现路径证明帧推进）；
+- [ ] 拖动/缩放目标窗口时视频画面无撕裂感（组合呈现经 DWM vsync 合成，理论上无撕裂）；
+- [ ] 任务管理器 GPU「视频解码」引擎在全屏游戏启动后回落（自动化以画面定格 + 状态机 Pause 验证）；
+- [ ] 应用内预览：视频的 MediaPlayerElement 预览在组合呈现路径下不再显示画面（预览旁路仅覆盖图片）——确认此取舍可接受（主输出=宿主）。
+
+#### DoD 自检（阶段 C）
+
+- [x] 视频背景在目标窗口内画面流动、比例正确（帧流动：红/蓝片段切换采样 2 色；比例：等比加边、边带恒定、无拉伸）
+- [x] 全屏前台 → 视频暂停（画面定格）→ 退出全屏恢复（组合呈现 + 既有状态机联动；「GPU 解码引擎回落」以画面定格 + Pause 验证，任务管理器观测留人工清单）
+- [x] 拖动/缩放目标窗口跟随 ≤100ms（宿主跟随沿用阶段 A 已验证路径；加边布局随尺寸同步重算，resize 后内容位置正确）
+- [x] 切换视频→图片→无背景，旧视频播放器与纹理资源释放（切图片后视频视觉消失 + ShutdownAll 清零；会话 Dispose 链路：Detach → Surface/Brush/PlayerSurface 释放）
+- [x] 阶段提交 `feat(WP1-C): 视频帧服务器上屏`
 
 ---
 

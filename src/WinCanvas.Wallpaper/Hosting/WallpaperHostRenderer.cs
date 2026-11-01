@@ -5,9 +5,9 @@ using WinCanvas.Wallpaper.Rendering;
 namespace WinCanvas.Wallpaper.Hosting;
 
 /// <summary>
-/// 壁纸宿主的 DComp 渲染器（规格 WP1-B 主路径，一对一挂在 <see cref="WallpaperHostWindow"/> 上）：
+/// 壁纸宿主的 DComp 图像渲染器（规格 WP1-B 主路径，一对一挂在 <see cref="WallpaperHostWindow"/> 上）：
 /// D3D11CreateDevice(BGRA_SUPPORT) → QI(IDXGIDevice) → DCompositionCreateDevice
-/// → CreateTargetForHwnd(host, TRUE) → CreateVisual → CreateSurface(B8G8R8A8 + PREMULTIPLIED，
+/// → CreateTargetForHwnd(host, TRUE) → CreateVisual → CreateSurface(B8G8R8A8 + ALPHA_MODE_IGNORE，
 /// 尺寸 = 宿主客户区) → BeginDraw → IDXGISurface1::GetDC → GDI StretchDIBits 把共享快照像素
 /// 缩放贴入 → ReleaseDC → EndDraw → SetContent → Commit 上屏。
 ///
@@ -17,12 +17,8 @@ namespace WinCanvas.Wallpaper.Hosting;
 /// - 设备失陷（DXGI_ERROR_DEVICE_REMOVED）：释放整棵树，下一次调用自动重建（壁纸会话不销毁）。
 /// 任何路径都不注册 FrameTick 逐帧绘制。
 ///
-/// 实现取舍（WORKLOG 阶段 B 决策 2）：表面直接按客户区尺寸创建、缩放交给 GDI（StretchDIBits），
-/// 而非「surface=快照尺寸 + visual 缩放矩阵」——后者需要 IDCompositionVisual::SetTransform，
-/// 而该接口两个重载在真实 ABI 中的槽位顺序与 dcomp.h 的 C++ 声明相反（WP1-B 探针实测：
-/// 矩阵指针打在对象重载槽 → E_INVALIDARG；NULL 打在矩阵重载槽 → AccessViolation），
-/// ComImport 声明顺序无法可靠命中；改走 GDI 缩放路线后视觉对象只需 SetContent（槽位无歧义），
-/// 零歧义、零额外依赖。SetBitmapInterpolationMode 同理不再需要（无 visual 级缩放）。
+/// 视频模式（WP1-C）由独立的 <see cref="CompositionVideoPresenter"/> 承担（MediaPlayer 组合呈现，
+/// ADR 见 WORKLOG 阶段 C），与本类共享宿主窗口但各持各的合成目标，互不引用。
 ///
 /// 线程模型：全部方法必须在宿主 pump 线程调用（COM 设备与 DComp target 按线程创建使用；
 /// WallpaperHostWindow 负责 pump 封送）。字段无需加锁——pump 串行化。
@@ -106,7 +102,7 @@ internal sealed class WallpaperHostRenderer : IDisposable
     }
 
     /// <summary>
-    /// 宿主客户区尺寸变化（WinEvent 跟随路径回调，pump 线程）：表面按新尺寸重建并重贴一次
+    /// 宿主客户区尺寸变化（WinEvent 跟随路径回调，pump 线程）：图像模式表面按新尺寸重建并重贴一次
     /// （规格 B.4「尺寸变化时重建 surface 重绘一次」；事件驱动、无逐帧工作）。
     /// </summary>
     public void UpdateClientSize(int width, int height)
@@ -218,8 +214,7 @@ internal sealed class WallpaperHostRenderer : IDisposable
     }
 
     /// <summary>
-    /// 确保表面在位且尺寸 = 客户区（尺寸不符时重建；相符时复用）。返回 false = 失败（已记日志）。
-    /// 像素重贴由调用方 <see cref="UploadPixels"/> 独立执行（每次 Render 必贴，见 Render 注释）。
+    /// 表面与客户区尺寸不符时重建表面并贴一次像素。返回 false = 失败（已记日志）。
     /// </summary>
     private bool EnsureSurface(int clientWidth, int clientHeight)
     {
@@ -277,7 +272,7 @@ internal sealed class WallpaperHostRenderer : IDisposable
     /// 把快照像素缩放贴入表面（BeginDraw → IDXGISurface1::GetDC → StretchDIBits → ReleaseDC → EndDraw）。
     /// DComp 表面不支持 IDXGISurface::Map 的 CPU 直写（WP1-B 探针实测 E_INVALIDARG），
     /// 官方 CPU 路径即 GDI DC：32bpp BI_RGB 的 DIB 数据与 PBgra8 快照逐字节同布局（B/G/R/A 顺序），
-    /// 缩放由 GDI HALFTONE 完成。alpha 字节随 DIB 逐行复制进预乘表面。
+    /// 缩放由 GDI HALFTONE 完成。alpha 字节随 DIB 逐行复制进不透明表面。
     /// 配对纪律：BeginDraw 成功后无论内层成败都必须 EndDraw；updateObject 的原始引用与 RCW 各自释放。
     /// </summary>
     private bool UploadPixels(BgraSnapshot snapshot)
@@ -397,7 +392,7 @@ internal sealed class WallpaperHostRenderer : IDisposable
             return false;
         }
 
-        HostDiagnostics.Log($"DComp 上屏 host=0x{_hostHwnd:X} surface={_surfaceW}x{_surfaceH}");
+        HostDiagnostics.Log($"DComp 图像上屏 host=0x{_hostHwnd:X} surface={_surfaceW}x{_surfaceH}");
         return true;
     }
 

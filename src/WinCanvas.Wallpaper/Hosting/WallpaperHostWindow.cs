@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using Windows.Media.Playback;
 using WinCanvas.Wallpaper.Rendering;
 
 namespace WinCanvas.Wallpaper.Hosting;
@@ -117,6 +118,10 @@ internal sealed class WallpaperHostWindow : IDisposable
     /// <summary>DComp 渲染器（WP1-B，pump 线程内读写）：首次 RenderImage 时惰性创建，
     /// 与宿主同生命周期；尺寸变化回调（SyncEmbedClientSize / SyncFollowBounds）也在 pump 线程直呼。</summary>
     private WallpaperHostRenderer? _renderer;
+
+    /// <summary>视频组合呈现器（WP1-C，pump 线程内读写）：视频会话经 BeginVideo 惰性创建，
+    /// EndVideo / Dispose 释放；与 DComp 渲染器各持各的合成目标，按壁纸类型互斥生效。</summary>
+    private CompositionVideoPresenter? _videoPresenter;
 
     private WallpaperHostWindow(IntPtr target, uint targetThreadId, uint targetProcessId)
     {
@@ -684,8 +689,9 @@ internal sealed class WallpaperHostWindow : IDisposable
             HostNativeMethods.SWP_NOMOVE | HostNativeMethods.SWP_NOACTIVATE | HostNativeMethods.SWP_NOZORDER);
         var delta = Environment.TickCount64 - t0;
 
-        // DComp 内容缩放到新客户区（pump 线程直呼；仅更新变换矩阵 + Commit，零像素拷贝）
+        // 图像表面按新客户区重建并重贴（pump 线程直呼）；视频模式则重算加边布局
         _renderer?.UpdateClientSize(width, height);
+        _videoPresenter?.LayoutVideo(width, height);
 
         HostDiagnostics.LogFollow(
             $"A1 尺寸跟随 delta={delta}ms 目标客户区=({width}x{height}) 宿主旧矩形=({hostW}x{hostH}) target=0x{TargetHwnd:X}");
@@ -783,8 +789,9 @@ internal sealed class WallpaperHostWindow : IDisposable
             return;
         }
 
-        // DComp 内容缩放到新尺寸（A2 宿主无边框，客户区 = 窗口矩形；pump 线程直呼，零像素拷贝）
+        // 图像表面按新尺寸重建重贴（A2 宿主无边框，客户区 = 窗口矩形）；视频模式重算加边布局
         _renderer?.UpdateClientSize(hostRect.Right - hostRect.Left, hostRect.Bottom - hostRect.Top);
+        _videoPresenter?.LayoutVideo(hostRect.Right - hostRect.Left, hostRect.Bottom - hostRect.Top);
 
         HostDiagnostics.LogFollow(
             $"A2 跟随 delta={delta}ms 目标外接=({bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom}) " +
@@ -1054,6 +1061,8 @@ internal sealed class WallpaperHostWindow : IDisposable
         // 目标已销毁时 A1 宿主多半已被链式销毁（IsWindow=false 直接跳过）；A2 宿主独立存在必须显式销毁
         WallpaperHostPump.Shared.Execute(() =>
         {
+            _videoPresenter?.Dispose(); // 视频组合树先于窗口销毁释放
+            _videoPresenter = null;
             _renderer?.Dispose(); // DComp 树先于窗口销毁释放（target 绑定的 HWND 不能先亡）
             _renderer = null;
             UnhookAll();
@@ -1094,6 +1103,55 @@ internal sealed class WallpaperHostWindow : IDisposable
         });
 
         return done && ok;
+    }
+
+    /// <summary>
+    /// 进入视频模式：在 pump 线程为播放器建 WinRT 组合呈现（GetSurface + DesktopWindowTarget）。
+    /// 任意工作线程调用（服务在视频会话挂接后调用）；幂等。
+    /// </summary>
+    /// <param name="player">视频会话的播放器（组合呈现路径，帧服务器标志须为关）。</param>
+    /// <returns>true = 已附着；false = 已释放 / 封送失败 / 附着失败（详见诊断日志）。</returns>
+    public bool BeginVideo(MediaPlayer player)
+    {
+        if (_disposed)
+            return false;
+
+        var ok = false;
+        var done = WallpaperHostPump.Shared.Execute(() =>
+        {
+            if (_disposed || !HostNativeMethods.IsWindow(_hwnd))
+                return;
+
+            if (!HostNativeMethods.GetClientRect(_hwnd, out var client))
+                return;
+
+            _videoPresenter ??= new CompositionVideoPresenter(_hwnd);
+            ok = _videoPresenter.Attach(player, client.Right - client.Left, client.Bottom - client.Top);
+        });
+
+        return done && ok;
+    }
+
+    /// <summary>
+    /// 视频客户区尺寸变化（宿主尺寸同步路径调用）：重算视频视觉的等比加边布局。pump 封送。
+    /// </summary>
+    public void UpdateVideoLayout(int width, int height)
+    {
+        if (_disposed)
+            return;
+
+        _ = WallpaperHostPump.Shared.Execute(() => _videoPresenter?.LayoutVideo(width, height));
+    }
+
+    /// <summary>
+    /// 退出视频模式（组合树 Root 清空、释放播放器表面与画刷）。pump 封送；幂等。
+    /// </summary>
+    public void EndVideo()
+    {
+        if (_disposed)
+            return;
+
+        _ = WallpaperHostPump.Shared.Execute(() => _videoPresenter?.Detach());
     }
 
     /// <summary>创建失败但窗口过程未收养句柄时释放 GCHandle（收养后由 WM_NCDESTROY 释放）。</summary>

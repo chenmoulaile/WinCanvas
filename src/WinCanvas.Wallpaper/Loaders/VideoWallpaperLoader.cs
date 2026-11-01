@@ -33,7 +33,10 @@ public static class VideoWallpaperLoader
             throw new FileNotFoundException("壁纸视频文件不存在。", path);
 
         // Windows.Media.Playback.MediaPlayer：
-        // 内部由 Media Foundation（MF MediaSession）驱动，H.264/HEVC/VP9 走 GPU 解码
+        // 内部由 Media Foundation（MF MediaSession）驱动，H.264/HEVC/VP9 走 GPU 解码。
+        // 视频呈现走组合呈现路径（WP1-C ADR：player.GetSurface(compositor) + SpriteVisual），
+        // MF 直接把解码帧渲染进组合表面——不启用帧服务器（IsVideoFrameServerEnabled 保持 false：
+        // 帧服务器路径的 CopyFrameToVideoSurface 对外部交换链缓冲实测 AV，见 WORKLOG 阶段 C ADR）。
         var player = new MediaPlayer
         {
             // 壁纸循环播放

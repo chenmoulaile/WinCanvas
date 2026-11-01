@@ -37,7 +37,6 @@ internal static class DcompNativeMethods
 
     /// <summary>IID_IDCompositionSurface（dcomp.h: BB8A4953-2C99-4F5A-96F5-4819027FA3AC）。</summary>
     public static readonly Guid IID_IDCompositionSurface = new("BB8A4953-2C99-4F5A-96F5-4819027FA3AC");
-
     // ===== 常量（d3d11.h / dxgi.h / d3dcommon.h 原值）=====
 
     /// <summary>D3D_DRIVER_TYPE_HARDWARE(1)：硬件驱动（配 pAdapter=NULL 时由 D3D 自选默认适配器）。</summary>
@@ -70,10 +69,6 @@ internal static class DcompNativeMethods
     /// <summary>DXGI_ALPHA_MODE_IGNORE(3)：忽略 alpha（表面按不透明合成）。GDI 路径用：
     /// GDI 的 32bpp blit 不感知 alpha（会把第 4 字节清零），预乘表面配 GDI 会整体透明。</summary>
     public const uint DXGI_ALPHA_MODE_IGNORE = 3;
-
-    /// <summary>DXGI_MAP_READ(1)：IDXGISurface::Map 的 CPU 读标志。</summary>
-    public const uint DXGI_MAP_READ = 1;
-
     /// <summary>DXGI_MAP_WRITE(2)：IDXGISurface::Map 的 CPU 写标志（像素拷入用）。</summary>
     public const uint DXGI_MAP_WRITE = 2;
 
@@ -163,7 +158,6 @@ internal static class DcompNativeMethods
     /// <returns>S_OK 成功；失败时 dcompDevice 为 NULL（GetLastError 不适用，HRESULT 即错误信息）。</returns>
     [DllImport("dcomp.dll", SetLastError = false)]
     public static extern int DCompositionCreateDevice(IntPtr dxgiDevice, in Guid riid, out IntPtr dcompDevice);
-
     // ===== COM 接口声明（成员顺序 = 真实 SDK 头文件声明顺序 = vtable 槽位；仅声明到最后一处调用）=====
 
     /// <summary>
@@ -344,12 +338,16 @@ internal static class DcompNativeMethods
         int SetClip(IntPtr clip);
 
         /// <summary>
-        /// 槽 15：SetContent——把合成表面关联到视觉（本渲染树的核心关联点）。
+        /// 槽 15：SetContent——把内容对象关联到视觉（本渲染树的核心关联点）。
+        /// 官方接受三类内容（dcomp.h SetContent 文档原文）：IDCompositionSurface 实现、
+        /// <b>IDXGISwapChain1 实现（视频帧上屏的承载，阶段 C）</b>、CreateSurfaceFromHandle/Hwnd 包装。
+        /// 参数必须显式按 IUnknown 封送：裸 object 在 ComImport 里默认走 VARIANT 封送，
+        /// 传 IUnknown 指针预期会 AccessViolation（WP1-C 探针实测）。
         /// </summary>
-        /// <param name="content">内容对象（IDCompositionSurface；null = 清除）。</param>
+        /// <param name="content">内容对象（IDCompositionSurface / IDXGISwapChain1 的 RCW；null = 清除）。</param>
         /// <returns>S_OK 成功；DXGI_ERROR_DEVICE_REMOVED 设备失陷。</returns>
         [PreserveSig]
-        int SetContent(IDCompositionSurface? content);
+        int SetContent([MarshalAs(UnmanagedType.IUnknown)] object? content);
     }
 
     /// <summary>
@@ -440,10 +438,14 @@ internal static class DcompNativeMethods
         public BITMAPINFOHEADER Header; // 信息头
     }
 
+
     /// <summary>
     /// IDCompositionSurface（dcomp.h）：CPU 可更新的合成表面。BeginDraw/EndDraw 是前两个成员（槽 3/4），
     /// 其后成员（SuspendDraw 等）不调用故省略。
     /// </summary>
+    // （注：视频帧路径不再使用本接口逐帧 BeginDraw——实测逐帧 BeginDraw/EndDraw 会稳定返回
+    // E_OUTOFMEMORY（DComp 表面并非为视频级更新频率设计），视频走 IDXGISwapChain1 组合交换链，
+    // 见 WallpaperHostRenderer 的视频段。）
     [ComImport]
     [Guid("BB8A4953-2C99-4F5A-96F5-4819027FA3AC")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -467,5 +469,122 @@ internal static class DcompNativeMethods
         /// <returns>S_OK 成功；E_INVALIDARG 无在途 BeginDraw；DXGI_ERROR_DEVICE_REMOVED 设备失陷。</returns>
         [PreserveSig]
         int EndDraw();
+    }
+
+    /// <summary>
+    /// IDXGISwapChain1（dxgi1_2.h）：组合交换链接口（视频帧上屏的内容承载——
+    /// IDCompositionVisual::SetContent 官方接受 IDXGISwapChain1 实现）。
+    /// 本切片只作为 CreateSwapChainForComposition 的出参类型；Present / GetBuffer 经
+    /// <see cref="IDXGISwapChain"/> 基切片调用（槽位与派生接口一致）。
+    /// 槽位：IUnknown(3) + IDXGIObject(4) + GetDevice(1) + IDXGISwapChain(10) + SwapChain1 专属 11 个（省略）。
+    /// </summary>
+    [ComImport]
+    [Guid("790a45f7-0d42-4876-983a-0a55cfe6f4aa")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IDXGISwapChain1
+    {
+        /// <summary>槽 3：IDXGIObject.SetPrivateData（占位，不调用）。</summary>
+        [PreserveSig]
+        int SetPrivateData();
+
+        /// <summary>槽 4：IDXGIObject.SetPrivateDataInterface（占位，不调用）。</summary>
+        [PreserveSig]
+        int SetPrivateDataInterface();
+
+        /// <summary>槽 5：IDXGIObject.GetPrivateData（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetPrivateData();
+
+        /// <summary>槽 6：IDXGIObject.GetParent（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetParent();
+
+        /// <summary>槽 7：IDXGIDeviceSubObject.GetDevice（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetDevice();
+
+        /// <summary>槽 8：IDXGISwapChain.Present（占位——帧呈现经 <see cref="IDXGISwapChain"/> 基切片调用）。</summary>
+        [PreserveSig]
+        int Present(uint syncInterval, uint flags);
+
+        /// <summary>槽 9：IDXGISwapChain.GetBuffer（占位——经基切片调用）。</summary>
+        [PreserveSig]
+        int GetBuffer(uint bufferIndex, in Guid riid, out IntPtr surface);
+
+        /// <summary>槽 10：GetDesc（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetDesc();
+
+        /// <summary>槽 11：GetFrameStatistics（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetFrameStatistics();
+
+        /// <summary>槽 12：GetLastPresentCount（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetLastPresentCount();
+
+        /// <summary>槽 13：GetFullscreenState（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetFullscreenState();
+
+        /// <summary>槽 14：SetFullscreenState（占位，不调用）。</summary>
+        [PreserveSig]
+        int SetFullscreenState();
+
+        /// <summary>槽 15：ResizeBuffers（占位，不调用——尺寸变化走整链重建）。</summary>
+        [PreserveSig]
+        int ResizeBuffers();
+
+        /// <summary>槽 16：ResizeTarget（占位，不调用）。</summary>
+        [PreserveSig]
+        int ResizeTarget();
+
+        /// <summary>槽 17：GetContainingOutput（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetContainingOutput();
+
+        /// <summary>槽 18：GetFrameStatistics1（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetDesc1();
+
+        /// <summary>槽 19：GetFullscreenDesc（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetFullscreenDesc();
+
+        /// <summary>槽 20：GetHwnd（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetHwnd();
+
+        /// <summary>槽 21：GetCoreWindow（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetCoreWindow();
+
+        /// <summary>槽 22：Present1（占位，不调用）。</summary>
+        [PreserveSig]
+        int Present1();
+
+        /// <summary>槽 23：IsTemporaryMonoSupported（占位，不调用）。</summary>
+        [PreserveSig]
+        int IsTemporaryMonoSupported();
+
+        /// <summary>槽 24：GetRestrictToOutput（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetRestrictToOutput();
+
+        /// <summary>槽 25：SetBackgroundColor（占位，不调用）。</summary>
+        [PreserveSig]
+        int SetBackgroundColor();
+
+        /// <summary>槽 26：GetBackgroundColor（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetBackgroundColor();
+
+        /// <summary>槽 27：SetRotation（占位，不调用）。</summary>
+        [PreserveSig]
+        int SetRotation();
+
+        /// <summary>槽 28：GetRotation（占位，不调用）。</summary>
+        [PreserveSig]
+        int GetRotation();
     }
 }

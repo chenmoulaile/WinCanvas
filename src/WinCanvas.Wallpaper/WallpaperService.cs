@@ -174,6 +174,31 @@ public sealed class WallpaperService : IWallpaperService
             if (host.Mode == HostAttachMode.Follow)
                 await EnsureFollowVisibilityAsync(hwnd).ConfigureAwait(false);
 
+            // 切出视频（视频 → 图片 / pkg / 无）：先解除视频组合呈现，视觉内容交还图像路径。
+            // EndVideo 幂等，非视频会话调用为 no-op。
+            if (source.Kind != WallpaperKind.Video)
+                host.EndVideo();
+
+            // 视频（规格 WP1-C ADR：组合呈现路径）：播放器经 GetSurface(compositor) 直接渲染进
+            // 组合表面，SpriteVisual 按视频比例加边布局——零拷贝、零逐帧代码；帧率联动复用既有
+            // 状态机（暂停态 → player.Pause() → 画面定格），无任何轮询。
+            if (source.Kind == WallpaperKind.Video && source.Player != null)
+            {
+                if (host.BeginVideo(source.Player))
+                {
+                    // 关键：显式起播。渲染循环的 StateChanged 仅在暂停分支触发（活跃态无状态迁移事件），
+                    // 新视频会话若不在此处 Play，播放器会停在「就绪未播」状态（WP1-C 实测定位，
+                    // 见 WORKLOG）。后续的暂停/恢复联动仍由 OnStateChanged 的状态迁移驱动。
+                    if (newSession.RenderLoop.Controller.ShouldRender)
+                        source.Player.Play();
+                }
+                else
+                {
+                    Report("视频背景渲染初始化失败：组合呈现附着未成功（详见诊断日志）。" +
+                           "已保留纯色占位，可尝试更新显卡驱动后重试。");
+                }
+            }
+
             // 图片 / pkg 降级封面（ImageFrame 非空，规格 B.3）：宿主 DComp 一次性上屏。
             // 像素快照走与预览共用的 BitmapSnapshot.CopyFrom（规格 B.3 要求逻辑下沉共享，勿复制两份）；
             // 静态图无逐帧工作——此后仅在尺寸变化 / 切换图片 / 设备失陷时由事件驱动重绘。
@@ -374,6 +399,9 @@ public sealed class WallpaperService : IWallpaperService
     {
         private readonly IntPtr _hwnd;
         private readonly Action<IntPtr, SoftwareBitmap> _imageFrameReady;
+
+        /// <summary>会话是否已释放（volatile：MF 事件线程的视频帧闭包须及时看到 Dispose）。仅守卫用途。</summary>
+        public bool IsDisposed => _disposed;
 
         /// <summary>
         /// 宿主窗口引用（WP1-A）：由服务层在会话替换后、旧会话释放前挂接（AttachHost），
