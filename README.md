@@ -47,7 +47,7 @@ Win32 宿主窗口（类名 `WinCanvasWallpaperHost`），两条挂接路径自�
 
 ### WinTips 提示与 NumLock 指示（src/WinCanvas.Wallpaper/WinTipsIntegrationService.cs + src/WinCanvas.Core/Services/KeyboardIndicatorService.cs）
 
-- **NumLock 键盘钩子**（`KeyboardIndicatorService`，WP2）：低级键盘钩子（`WH_KEYBOARD_LL`）安装在专用后台消息线程（GetMessage 循环，空闲零 CPU），回调内只做一次 `GetKeyState` 读态与去抖比较（微秒级返回，不拖慢全系统键盘输入）；NumLock 状态**变化**时经线程池派发上报——按住自动重复、同一翻转的 KEYDOWN/KEYUP 双时机都只产生一次提示。主界面「WinTips 提示」开关控制钩子启停（关→显式 `UnhookWindowsEx` 卸钩 + 进程退出兜底卸载），关闭后按键零反应。
+- **NumLock 键盘钩子**（`KeyboardIndicatorService`，WP2）：低级键盘钩子（`WH_KEYBOARD_LL`）安装在专用后台消息线程（GetMessage 循环，空闲零 CPU），回调内只做一次 `GetKeyState` 读态与去抖比较（微秒级返回，不拖慢全系统键盘输入）；NumLock 状态**变化**时经线程池派发上报——按住自动重复、同一翻转的 KEYDOWN/KEYUP 双时机都只产生一次提示。主界面「WinTips 提示」开关控制钩子启停（关→显式 `UnhookWindowsHookEx` 卸钩 + 进程退出兜底卸载），关闭后按键零反应。
 - **WinTips 集成**（`IStatusNotifier` 的实现）：优先进程调用已部署的 `WinTips.exe`（CLI 格式 `--test num on|off [holdSeconds]`）复用其 Win11 质感浮窗；找不到或调用失败时回退本地事件通道（在主界面 InfoBar 显示）。
 - **WinTips.exe 自动部署**：构建 `WinCanvas.sln` 时，`WinCanvas.App.csproj` 的 MSBuild Target `BuildAndDeployWinTips` 会用 .NET 10 SDK 外挂构建 WinTips 子模块并把产物拷到应用输出目录 `WinTips\` 下（增量：源码未变时跳过）；外挂构建失败只产生 warning 不阻断主构建，运行期自动走 InfoBar 回退通道。
 - WinTips 源码位于 git 子模块 [ThirdParty/WinTips](https://github.com/DoYouNatureQ/WinTips)（net10.0-windows WPF；不加入 sln，仅以外挂 MSBuild Target 构建部署）。
