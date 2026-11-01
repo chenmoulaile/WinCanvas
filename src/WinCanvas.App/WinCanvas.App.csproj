@@ -95,4 +95,29 @@
              Text="未找到 WinTips 子模块工程（ThirdParty/WinTips/WinTips.csproj）：请先执行 git submodule update --init 拉取子模块；本次构建不会部署 WinTips.exe，NumLock 提示走本地 InfoBar 回退通道。" />
   </Target>
 
+  <!-- ===== 发布产物修复（v0.1.0 发布包实测缺陷）：dotnet publish 对 unpackaged WinUI 3 有两处遗漏
+       ① XAML 编译产物 *.xbf 与应用资源索引 WinCanvas.App.pri 不在发布清单里——缺它们时
+          XAML 资源加载失败，应用启动即崩溃（实测事件日志：Microsoft.UI.Xaml.dll
+          0xc000027b 存储异常 / combase 80004005 E_FAIL）；
+       ② WinTips\ 外挂部署目录只被 BuildAndDeployWinTips 拷到 $(OutDir)，publish 收集器不感知。
+       本 Target 在发布清单计算完成后，把这两类产物从 $(OutDir) 追加进 ResolvedFileToPublish。 -->
+  <Target Name="IncludeRuntimeArtifactsInPublish" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <!-- 1) XAML 编译产物：App/MainWindow 等全部 .xbf（bin 输出根目录） -->
+      <_PublishXbfFiles Include="$(OutDir)*.xbf" />
+      <ResolvedFileToPublish Include="@(_PublishXbfFiles)">
+        <RelativePath>%(Filename)%(Extension)</RelativePath>
+      </ResolvedFileToPublish>
+      <!-- 2) 应用资源索引（.NET 单项目 PRI，名为 WinCanvas.App.pri） -->
+      <ResolvedFileToPublish Include="$(OutDir)$(TargetName).pri">
+        <RelativePath>$(TargetName).pri</RelativePath>
+      </ResolvedFileToPublish>
+      <!-- 3) WinTips 浮窗组件目录（整体递归） -->
+      <_PublishWinTipsFiles Include="$(OutDir)WinTips\**\*.*" />
+      <ResolvedFileToPublish Include="@(_PublishWinTipsFiles)">
+        <RelativePath>WinTips\%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
 </Project>
