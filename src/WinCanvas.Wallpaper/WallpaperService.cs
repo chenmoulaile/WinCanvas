@@ -48,6 +48,13 @@ public sealed class WallpaperService : IWallpaperService
     private readonly Dictionary<IntPtr, WallpaperHostWindow> _hosts = new();
 
     /// <summary>
+    /// 图片加载时的显示器分辨率（WP1-D 跨屏重缩放依据）：窗口句柄 -> (宽, 高)。
+    /// 由 <see cref="_gate"/> 保护；图片会话挂接时记录，宿主客户区变化时比对，
+    /// 分辨率变化（跨屏移动 / DPI 变化）即按新分辨率重新走加载管线。
+    /// </summary>
+    private readonly Dictionary<IntPtr, (int W, int H)> _monitorResAtLoad = new();
+
+    /// <summary>
     /// 窗口控制服务（可选注入，WP1-A）：A2 跟随模式下目标不透明时自动应用轻度透明的执行者。
     /// 未注入（如诊断工具场景）时跳过自动透明并提示用户手动调整，挂接功能不受影响。
     /// </summary>
@@ -210,6 +217,18 @@ public sealed class WallpaperService : IWallpaperService
                     Report("背景画面渲染失败：DirectComposition 初始化未成功（详见诊断日志）。" +
                            "已保留纯色占位，可尝试更新显卡驱动后重试。");
                 }
+
+                // 记录加载时的显示器分辨率（WP1-D 跨屏重缩放依据）：Image 层的快照在导入时
+                // 缩放到了「当时所在显示器」的分辨率（loader 目标分辨率参数）；跨屏移动后由
+                // HandleClientSizeChangedAsync 比对，分辨率变化即按新显示器重新加载。
+                if (source.Kind == WallpaperKind.Image
+                    && Native.WallpaperNativeMethods.TryGetMonitorResolutionForWindow(hwnd, out var mw, out var mh))
+                {
+                    lock (_gate)
+                    {
+                        _monitorResAtLoad[hwnd] = (mw, mh);
+                    }
+                }
             }
         }
 
@@ -246,6 +265,12 @@ public sealed class WallpaperService : IWallpaperService
         // UpdateCoreAsync 正同步等待 pump 往返，两端互等即死锁（详见 WORKLOG 决策 4）。
         host.TargetLost += target => _ = Task.Run(() => CleanupSessionCoreAsync(target));
 
+        // 宿主客户区变化（WinEvent 尺寸同步 / WM_DPICHANGED 之后）→ 跨屏分辨率重缩放检查（WP1-D）。
+        // WinEvent 回调在 pump 线程触发：转线程池执行（重活不占 pump），判定与重挂在由
+        // _updateGates 串行化，不会与在途壁纸更新互踩。
+        host.ClientSizeChanged += (target, width, height) => _ = Task.Run(
+            () => HandleClientSizeChangedAsync(target, width, height));
+
         // 挂接模式变化（A1 降级 A2）→ 透传给 UI（pump 线程触发，订阅方封送）
         host.AttachModeChanged += (target, mode) => SessionHostModeChanged?.Invoke(target, mode);
 
@@ -255,6 +280,51 @@ public sealed class WallpaperService : IWallpaperService
         }
 
         return host;
+    }
+
+    /// <summary>
+    /// 宿主客户区变化后的跨屏分辨率重缩放检查（规格 WP1-D：图片按新显示器分辨率重新缩放，
+    /// 复用 <see cref="Loaders.ImageWallpaperLoader"/> 的目标分辨率参数）。
+    /// 仅图片会话处理：加载时的显示器分辨率记录在 <see cref="_monitorResAtLoad"/>，
+    /// 与当前显示器分辨率不一致（跨屏移动 / DPI 变化）时，用源路径重新走一次
+    /// <see cref="UpdateWallpaperAsync"/>（新分辨率下重新解码缩放；同分辨率幂等跳过）。
+    /// 视频会话无需处理——组合呈现的加边布局已随尺寸同步重算。
+    /// 在线程池线程执行；与壁纸更新共用 _updateGates 闸门，不会与在途更新互踩。
+    /// </summary>
+    private Task HandleClientSizeChangedAsync(IntPtr hwnd, int clientWidth, int clientHeight)
+    {
+        WallpaperSession? session;
+        lock (_gate)
+        {
+            if (!_sessions.TryGetValue(hwnd, out session))
+                return Task.CompletedTask; // 会话已不在（切走 / 清理）
+        }
+
+        // 仅图片层按显示器分辨率重解码；pkg 封面与视频由各自的尺寸路径处理
+        if (session.Source.Kind != WallpaperKind.Image || session.Host == null)
+            return Task.CompletedTask;
+
+        var originalPath = session.Source.OriginalPath;
+        if (string.IsNullOrEmpty(originalPath) || !File.Exists(originalPath))
+            return Task.CompletedTask; // 源文件已被移走：档案保留，不重缩放
+
+        if (!Native.WallpaperNativeMethods.TryGetMonitorResolutionForWindow(hwnd, out var monitorW, out var monitorH))
+            return Task.CompletedTask;
+
+        lock (_gate)
+        {
+            if (_monitorResAtLoad.TryGetValue(hwnd, out var atLoad)
+                && atLoad.W == monitorW && atLoad.H == monitorH)
+            {
+                return Task.CompletedTask; // 分辨率未变（同屏尺寸调整 / 移动），幂等跳过
+            }
+
+            _monitorResAtLoad[hwnd] = (monitorW, monitorH); // 先记账再重挂，防重复触发
+        }
+
+        HostDiagnostics.Log(
+            $"跨屏重缩放 target=0x{hwnd:X} → 新显示器 {monitorW}x{monitorH}，按源路径重新加载：{originalPath}");
+        return UpdateWallpaperAsync(hwnd, originalPath);
     }
 
     /// <summary>
@@ -274,6 +344,7 @@ public sealed class WallpaperService : IWallpaperService
             {
                 _sessions.Remove(hwnd, out session);
                 _hosts.Remove(hwnd, out host);
+                _monitorResAtLoad.Remove(hwnd); // WP1-D：跨屏重缩放记账随会话清理
             }
 
             session?.Dispose();
@@ -333,6 +404,7 @@ public sealed class WallpaperService : IWallpaperService
             hosts = new List<WallpaperHostWindow>(_hosts.Values);
             _sessions.Clear();
             _hosts.Clear();
+            _monitorResAtLoad.Clear(); // WP1-D：跨屏重缩放记账随退出清理
         }
 
         foreach (var session in sessions)

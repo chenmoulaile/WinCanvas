@@ -94,8 +94,6 @@
 
 ## 2. WP1 壁纸真实上屏
 
-
-
 ### 2.A 阶段 A：宿主窗口与双路径挂接（2026-11-01）
 
 **状态**：完成。提交：`feat(WP1-A): 宿主窗口与双路径挂接`（分支 `feat/complete-w0-w5`）。先不渲染，宿主以纯色（深蓝 RGB(30,80,180)，`HostNativeMethods.HostPhaseAFillColor`）GDI 填充验证挂接正确性；阶段 B 换 DComp 渲染时窗口类、挂接与跟随逻辑保留复用。
@@ -279,6 +277,48 @@
 - [x] 阶段提交 `feat(WP1-C): 视频帧服务器上屏`
 
 ---
+
+### 2.D 阶段 D：上屏收口与文档同步（2026-11-01）
+
+**状态**：完成。提交：`feat(WP1-D): 上屏收口与文档同步`（分支 `feat/complete-w0-w5`）。
+
+#### 改动清单
+
+| 文件 | 动作 | 说明 |
+| --- | --- | --- |
+| `src/WinCanvas.Wallpaper/Hosting/WallpaperHostWindow.cs` | 修改 | 新增 `ClientSizeChanged(target, w, h)` 事件（A1/A2 尺寸同步与 `WM_DPICHANGED` 后触发）；`WM_DPICHANGED` 处理：默认处理（建议矩形）后上报新客户区（A2 路径；A1 宿主是目标子窗口，系统不向其发送该消息，无需处理） |
+| `src/WinCanvas.Wallpaper/WallpaperService.cs` | 修改 | `_monitorResAtLoad` 记账（图片挂接时记录显示器分辨率）；`HandleClientSizeChangedAsync`（跨屏/跨 DPI 分辨率变化 → 按源路径重走加载管线，新显示器分辨率下重缩放；同分辨率幂等跳过）；清理点同步（CleanupSessionCoreAsync / ShutdownAll） |
+| `src/WinCanvas.App/ViewModels/MainViewModel.cs` | 修改 | 错误呈现三要素补齐：背景加载失败 / 文件选择器失败的 InfoBar 文案补「用户能做什么」建议 |
+| `README.md` | 修改 | 新增「背景上屏」功能节（双路径挂接 / 图片跨屏重缩放 / 视频组合呈现 / 预览旁路说明）；使用说明补双模式与 UIPI 权限说明；「已知限制」删除已完成的「壁纸画面为应用内预览」条目，新增「视频的应用内预览为空」如实条目 |
+| `docs/architecture.md` | 修改 | 新增「宿主窗口与背景上屏」节：双路径决策图（mermaid）、嵌入/跟随行为、pump 线程模型、B/C 上屏路径、跨屏重缩放、预览旁路 |
+| `docs/api.md` | 修改 | 新增 3.2/3.3 节（WallpaperService 宿主扩展 + Hosting internal 类型表），后续小节重编号 |
+| `docs/risk.md` | 修改 | 第 3 节覆盖层次更新（宿主双路径/组合呈现/测试骨架）；第 4 节新增「跨进程 SetParent 输入队列附加」风险条目（缓解=自动降级）与「组合呈现与目标进程零交互」；矩阵新增「背景上屏」行、功能完整性行更新 |
+
+#### 关键决策与理由
+
+1. **预览旁路化的边界**：主输出（宿主）与预览各持一份呈现资源——宿主持 DComp 表面/组合表面（原生像素），预览持快照副本（WriteableBitmap），拷贝逻辑共用 `BitmapSnapshot` 一份实现（阶段 B 已下沉）。视频走组合呈现后 MF 直接渲染进组合表面，预览区不再收到画面——如实写入 README「已知限制」（主输出=目标窗口是产品方向）。
+2. **跨屏重缩放的记账式防循环**：`_monitorResAtLoad` 在图片挂接时记录「当时显示器分辨率」；客户区变化时比对当前显示器分辨率，变化才重走加载管线并先记账——避免「重挂 → 尺寸事件 → 再重挂」的循环。同分辨率幂等跳过；源文件缺失时档案保留不重缩放。
+3. **WM_DPICHANGED 只在 A2 生效**：A1 宿主是目标的 WS_CHILD 子窗口，其位置/尺寸由目标控制，系统不向子窗口发送 WM_DPICHANGED；A2 宿主是独立顶层窗口，默认处理（建议矩形）后再上报客户区变化，与 WinEvent 尺寸同步收敛到同一条 `ClientSizeChanged` 通道。
+4. **错误三要素**：审核全部用户可见错误文案；补齐两处缺「建议」的 InfoBar（背景加载失败 / 文件选择器失败）。宿主挂接与渲染失败的文案在 B/C 阶段已带三要素。
+
+#### 验证证据摘要
+
+- **构建门禁**：clean 全量 `dotnet build WinCanvas.sln -c Debug` = **0 错误 / 26 警告**（= 基线）；`dotnet test` = **6/6 通过**。
+- **四组回归全绿**：阶段 A 默认电池（29 断言）、阶段 B render 电池（9 断言）、service 冒烟（3 断言）、阶段 C video 电池（6 断言，含 800x800 resize 路径——即 ClientSizeChanged/UpdateVideoLayout 的实际执行）。
+- **文档一致性**：README「已知限制」与 docs 三件套经本阶段更新后与代码行为一致（宿主上屏已实现、视频预览为空如实标注）。
+
+#### DoD 自检（阶段 D，即 WP1 整体 DoD）
+
+- [x] 图片 / 视频 / pkg（纯图、纯视频、SceneScript 降级封面）四类背景全部在目标窗口真实上屏（B 阶段 render 电池 + C 阶段 video 电池实测）
+- [x] 目标窗口交互零干扰（点击 / 键盘 / 拖拽 / 菜单；穿透样式 + 消息循环存活探针 + SendInput 点击命中验证）
+- [x] 拖动/缩放目标窗口跟随 ≤100ms（阶段 A 电池实测 32~94ms）；目标关闭 1s 内资源回收（实测 15~218ms）；应用退出零残留（CountAliveHosts = 0）
+- [x] A1 异常时自动降级 A2（创建失败降级为阶段 A 实测；观察窗内焦点/父子断裂降级为 A 实现路径，构造拒绝 SetParent 场景的专项验证在阶段 A probe 完成）
+- [x] build 0 error、test 全绿、WORKLOG 含 ADR 与验证证据摘要
+- [x] 提交 `feat(WP1-D): 上屏收口与文档同步`；README/docs 已更新
+
+---
+
+
 
 ## 3. WP2 NumLock 键盘钩子与提示链路端到端（待开始）
 

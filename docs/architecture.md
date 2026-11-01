@@ -107,6 +107,52 @@ stateDiagram-v2
 - **UI 封送约定**：渲染线程与线程池上的事件（`StatusReported` / `ImageFrameReady` / `StateChanged`）一律由订阅方自行封送；`MainViewModel.ShowInfo` 用 `DispatcherQueue.TryEnqueue` 切回 UI 线程（src/WinCanvas.App/ViewModels/MainViewModel.cs:453）。
 - **上屏接线（已完成）**：App 层 `WallpaperPreviewController` 订阅 `ImageFrameReady`（渲染线程内同步复制像素 → DispatcherQueue → WriteableBitmap → 预览 Image）与 `VideoPlayerReady`（MediaPlayerElement.SetMediaPlayer 输出）。
 
+### 宿主窗口与背景上屏（WP1，src/WinCanvas.Wallpaper/Hosting）
+
+设置背景后画面真实呈现在目标窗口内部。承载者是属于本进程的 Win32 宿主窗口
+（类名 `WinCanvasWallpaperHost`），由 `Hosting/WallpaperHostWindow` 封装，两条挂接路径自动选择：
+
+```mermaid
+flowchart LR
+    A[设置背景] --> B{跨进程嵌入<br/>WS_CHILD}
+    B -- 成功 --> C[嵌入模式<br/>宿主沉到目标子窗口底部]
+    B -- 失败（UIPI / DPI 不兼容） --> D[跟随模式<br/>独立顶层窗口]
+    C --> E[WinEvent 跟随<br/>尺寸 / Z 序 / 销毁]
+    D --> E
+```
+
+- **嵌入模式（首选）**：`WS_CHILD` 子窗口 + 目标为客户区父窗口，尺寸 = `GetClientRect(target)`，
+  沉底（`HWND_BOTTOM`）后目标自绘背景被覆盖、既有子控件在其上继续可见可点。目标移动时子窗口
+  自动跟随；监听 `EVENT_OBJECT_LOCATIONCHANGE`（客户区尺寸变化）与 `EVENT_OBJECT_REORDER`
+  （Z 序被调）同步宿主。
+- **跟随模式（回退）**：嵌入被拒（UIPI / DPI 上下文不兼容 / 目标已销毁）时降级为 `WS_POPUP`
+  独立窗口（`NOACTIVATE | TOOLWINDOW | LAYERED | TRANSPARENT`），跟随目标外接矩形
+  （优先 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`）、Z 序钉在目标正下方，
+  监听 SHOW / HIDE / MINIMIZESTART/END 同步显隐。目标不透明时自动应用轻度透明（alpha=220）。
+- **降级与异常检测**：A1 挂接观察窗内焦点异常（宿主获得键盘焦点）或父子关系被目标侧改动 →
+  自动降级 A2；目标销毁（`EVENT_OBJECT_DESTROY` / 宿主 `WM_DESTROY` 双信号）→ 会话
+  Dispose + 宿主销毁。
+- **线程模型（宿主专用 pump 线程）**：全部宿主窗口与 WinEvent 钩子在
+  `Hosting/WallpaperHostPump` 的专用消息线程（线程名 `WinCanvas.Wallpaper.HostPump`）上创建与
+  操作——跨线程 `DestroyWindow` 非法、`WINEVENT_OUTOFCONTEXT` 回调要求安装线程跑消息循环；
+  外部调用经 `Execute`（`PostThreadMessageW` + 信号等待）封送，线程启动时 `CoInitializeEx(STA)`
+  + PeekMessage 强制建消息队列。
+- **图片上屏（B 阶段）**：`WallpaperHostRenderer` 的 DComp 树（设备 → Target → Visual →
+  Surface），逐次 `BeginDraw → IDXGISurface1::GetDC → GDI StretchDIBits（HALFTONE）→
+  EndDraw → Commit`；表面按客户区尺寸重建，静态图零逐帧工作；设备失陷整树重建。
+- **视频上屏（C 阶段，ADR：组合呈现）**：`Hosting/CompositionVideoPresenter` 以
+  `MediaPlayer.GetSurface(compositor)` 拿播放器组合表面 → SurfaceBrush → SpriteVisual →
+  `ICompositorDesktopInterop.CreateDesktopWindowTarget` 绑定宿主 HWND；画面由 MF + 系统组合
+  引擎直接呈现（零拷贝、零逐帧）；SpriteVisual 按 `NaturalVideoWidth/Height` 等比加边居中，
+  自持专用 DispatcherQueue 线程（组合对象要求创建线程持有 DQ）。主路径（帧服务器
+  `CopyFrameToVideoSurface`）实测受阻（逐帧 BeginDraw E_OUTOFMEMORY / 对外部翻转缓冲
+  CopyFrameToVideoSurface AV），ADR 全文见 WORKLOG 阶段 C。
+- **跨屏重缩放（D 阶段）**：加载时显示器分辨率记录于 `WallpaperService._monitorResAtLoad`；
+  宿主 `ClientSizeChanged`（WinEvent 尺寸同步 / `WM_DPICHANGED` 之后）触发比对，分辨率变化即
+  按源路径重新走加载管线（新显示器分辨率下 Lanczos 重缩放）。
+- **预览旁路**：主窗口预览区为派生显示（图片快照副本上屏；视频的组合呈现路径下预览为空，
+  主输出 = 目标窗口）。
+
 ## 4. WinTips 提示模块
 
 - `WinTipsIntegrationService` 实现 `IStatusNotifier`（src/WinCanvas.Wallpaper/WinTipsIntegrationService.cs:18）：

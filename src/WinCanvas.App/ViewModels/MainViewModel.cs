@@ -372,7 +372,8 @@ public partial class MainViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            ShowInfo(InfoBarSeverity.Error, $"打开文件选择器失败：{ex.Message}");
+            ShowInfo(InfoBarSeverity.Error, $"打开文件选择器失败：{ex.Message}。可重试一次；" +
+                                            "仍失败请重启应用后再次选择。");
             return;
         }
 
@@ -400,7 +401,8 @@ public partial class MainViewModel : ObservableObject
         catch (Exception ex)
         {
             WallpaperStatusText = "背景加载失败。";
-            ShowInfo(InfoBarSeverity.Error, $"背景加载失败：{ex.Message}");
+            ShowInfo(InfoBarSeverity.Error, $"背景加载失败：{ex.Message}。" +
+                                            "可重试一次；仍失败请更换文件（支持图片 / 视频 / .pkg）或检查文件是否被占用。");
         }
         finally
         {

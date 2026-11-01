@@ -82,6 +82,13 @@ internal sealed class WallpaperHostWindow : IDisposable
     /// </summary>
     public event Action<IntPtr>? TargetLost;
 
+    /// <summary>
+    /// 宿主客户区尺寸变化（跟随路径同步完成之后触发；WP1-D 加入）。
+    /// pump 线程触发；参数为（目标 hwnd, 客户区宽, 客户区高）。服务层据此检测跨屏分辨率
+    /// 变化并按新显示器分辨率重缩放图片（规格 WP1-D）；订阅方不得在回调内做重活，应转线程池。
+    /// </summary>
+    public event Action<IntPtr, int, int>? ClientSizeChanged;
+
     /// <summary>宿主窗口句柄（pump 线程内读写；pump 外读取仅诊断参考）。</summary>
     private IntPtr _hwnd;
 
@@ -692,6 +699,7 @@ internal sealed class WallpaperHostWindow : IDisposable
         // 图像表面按新客户区重建并重贴（pump 线程直呼）；视频模式则重算加边布局
         _renderer?.UpdateClientSize(width, height);
         _videoPresenter?.LayoutVideo(width, height);
+        ClientSizeChanged?.Invoke(TargetHwnd, width, height); // 服务层据此做跨屏分辨率重缩放（WP1-D）
 
         HostDiagnostics.LogFollow(
             $"A1 尺寸跟随 delta={delta}ms 目标客户区=({width}x{height}) 宿主旧矩形=({hostW}x{hostH}) target=0x{TargetHwnd:X}");
@@ -792,6 +800,7 @@ internal sealed class WallpaperHostWindow : IDisposable
         // 图像表面按新尺寸重建重贴（A2 宿主无边框，客户区 = 窗口矩形）；视频模式重算加边布局
         _renderer?.UpdateClientSize(hostRect.Right - hostRect.Left, hostRect.Bottom - hostRect.Top);
         _videoPresenter?.LayoutVideo(hostRect.Right - hostRect.Left, hostRect.Bottom - hostRect.Top);
+        ClientSizeChanged?.Invoke(TargetHwnd, hostRect.Right - hostRect.Left, hostRect.Bottom - hostRect.Top);
 
         HostDiagnostics.LogFollow(
             $"A2 跟随 delta={delta}ms 目标外接=({bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom}) " +
@@ -954,8 +963,22 @@ internal sealed class WallpaperHostWindow : IDisposable
                     instance2?.OnNativeNcDestroy(hwnd);
                     break;
 
-                case 0x02E0: // WM_DPICHANGED：DPI 变更处理属于阶段 D（规格 WP1-D 第 2 条），阶段 A 仅透传默认处理
-                    break;
+                case 0x02E0: // WM_DPICHANGED（WP1-D）：A2 宿主为独立顶层窗口，跨屏移动时由系统
+                    // 发送建议矩形。先交默认处理（按建议矩形调整自身），再上报客户区变化——
+                    // 服务层据此重缩放图片（新显示器分辨率）、视频重算加边布局。A1 宿主是目标的
+                    // WS_CHILD，位置/尺寸由目标控制，系统不向其发送 WM_DPICHANGED，无需处理。
+                    {
+                        var dpiResult = HostNativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
+                        if (instance2 != null && HostNativeMethods.GetClientRect(hwnd, out var dpiClient))
+                        {
+                            instance2.ClientSizeChanged?.Invoke(
+                                instance2.TargetHwnd,
+                                dpiClient.Right - dpiClient.Left,
+                                dpiClient.Bottom - dpiClient.Top);
+                        }
+
+                        return dpiResult;
+                    }
             }
 
             return HostNativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);

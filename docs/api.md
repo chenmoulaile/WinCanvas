@@ -1,4 +1,4 @@
-﻿# API 说明
+﻿﻿# API 说明
 
 本文档全部接口与模型**从真实代码抄录**（来源文件在每节标注），不包含尚未实现的虚构成员。
 
@@ -213,7 +213,35 @@ public sealed class WallpaperService : IWallpaperService
 }
 ```
 
-### 3.2 WinTipsIntegrationService（实现 IStatusNotifier，src/WinCanvas.Wallpaper/WinTipsIntegrationService.cs）
+### 3.2 WallpaperService 宿主/事件扩展（WP1，src/WinCanvas.Wallpaper/）
+
+WP1 在 `WallpaperService` 上新增的公共成员与事件（均由服务内部接线，App 层只订阅）：
+
+```csharp
+public sealed class WallpaperService : IWallpaperService
+{
+    /// <summary>会话宿主挂接模式确定 / 变化（创建成功或 A1 降级 A2）。
+    /// pump 线程或线程池触发；App 层据此在状态文本显示「嵌入模式 / 跟随模式」。</summary>
+    public event Action<IntPtr, HostAttachMode>? SessionHostModeChanged;
+
+    /// <summary>销毁全部会话与宿主（IWallpaperService 新增；应用退出时调用）。</summary>
+    public void ShutdownAll();
+}
+```
+
+### 3.3 宿主窗口类型（WP1，src/WinCanvas.Wallpaper/Hosting/，internal）
+
+| 类型 | 职责 |
+| --- | --- |
+| `WallpaperHostWindow`（internal sealed） | 宿主窗口封装：窗口类注册、A1 跨进程 `WS_CHILD` 嵌入 / A2 顶层跟随、WinEvent 跟随、A1→A2 自动降级、目标销毁上报。公共成员：`TryCreate(target, [preferred], out error)`、`RenderImage(BgraSnapshot)`、`BeginVideo(MediaPlayer)`、`UpdateVideoLayout(w, h)`、`EndVideo()`、`CountAliveHosts(processIdFilter)`、事件 `AttachModeChanged` / `TargetLost` / `ClientSizeChanged(target, w, h)` |
+| `HostAttachMode`（internal enum） | `Embed`（A1 跨进程子窗口嵌入）/ `Follow`（A2 顶层跟随） |
+| `WallpaperHostRenderer`（internal sealed） | DComp 图像渲染器：设备树 + `BeginDraw → GetDC → StretchDIBits → EndDraw → Commit`；表面按客户区尺寸重建；设备失陷整树重建 |
+| `CompositionVideoPresenter`（internal sealed） | 视频组合呈现（ADR：GetSurface + DesktopWindowTarget + SpriteVisual 等比加边）；自持专用 DispatcherQueue 线程 |
+| `WallpaperHostPump`（internal sealed） | 宿主专用消息线程：跨线程 DestroyWindow 合法性与 WINEVENT_OUTOFCONTEXT 回调的统一载体；`Execute(action)` 同步封送 |
+| `HostNativeMethods` / `DcompNativeMethods`（internal static） | 宿主 / DComp 专用 P/Invoke（全部带规格级中文注释） |
+| `BitmapSnapshot` / `BgraSnapshot`（internal，Rendering/） | SoftwareBitmap → PBgra8 紧密快照的共享拷贝工具（预览与宿主共用一份实现） |
+
+### 3.4 WinTipsIntegrationService（实现 IStatusNotifier，src/WinCanvas.Wallpaper/WinTipsIntegrationService.cs）
 
 ```csharp
 public sealed class WinTipsIntegrationService : IStatusNotifier
@@ -236,7 +264,7 @@ public sealed class WinTipsIntegrationService : IStatusNotifier
 }
 ```
 
-### 3.3 DynamicFrameRateController（src/WinCanvas.Wallpaper/Rendering/DynamicFrameRateController.cs）
+### 3.5 DynamicFrameRateController（src/WinCanvas.Wallpaper/Rendering/DynamicFrameRateController.cs）
 
 纯状态机，不持有线程资源。三档策略：窗口激活 60fps / 非激活 15fps / 全屏前台或用户暂停完全暂停。
 
@@ -259,7 +287,7 @@ public sealed class DynamicFrameRateController
 }
 ```
 
-### 3.4 WallpaperRenderLoop（src/WinCanvas.Wallpaper/Rendering/WallpaperRenderLoop.cs）
+### 3.6 WallpaperRenderLoop（src/WinCanvas.Wallpaper/Rendering/WallpaperRenderLoop.cs）
 
 壁纸专用后台渲染线程（线程名 `WinCanvas.Wallpaper.Render`，IsBackground、BelowNormal 优先级）。
 
@@ -281,7 +309,7 @@ public sealed class WallpaperRenderLoop : IDisposable
 }
 ```
 
-### 3.5 加载器（src/WinCanvas.Wallpaper/Loaders/）
+### 3.7 加载器（src/WinCanvas.Wallpaper/Loaders/）
 
 ```csharp
 // ImageWallpaperLoader：第一层静态图片（.jpg/.jpeg/.png/.bmp/.gif），GIF 取第一帧
@@ -301,7 +329,7 @@ public static WallpaperSource Load(string pkgPath);
 // 抛 FileNotFoundException（文件不存在）/ InvalidDataException（pkg 头魔数不合法）
 ```
 
-### 3.6 模型
+### 3.8 模型
 
 ```csharp
 /// <summary>背景资源的实际类型（三层策略的判定结果）。</summary>
