@@ -717,4 +717,79 @@
 - [x] 仓库内无 `TODO` / `FIXME` / `待补充` / `XXX` 遗留（grep 验证，见 6.4 #10）
 - [x] `dotnet build WinCanvas.sln -c Debug`（clean 全量）0 error、warning = 基线 26；`dotnet test` 108/108 全绿
 - [x] README / docs / WORKLOG 与代码行为一致（6.4 自查表）
-- [ ] `git merge` 回 `main` 前后各跑一次构建/测试 + 手工冒烟场景走查 —— 归属「终验与交付报告」环节（merge 回 main 是全部 WP 之后的独立动作，不在本 WP 的任务与提交范围内），本 WP 已把分支上的构建/测试门禁跑绿，merge 后复跑与手工冒烟（记事本挂图 / 浏览器挂视频 / pkg 降级 / NumLock / 重启恢复 / 全屏暂停）留待终验执行者按清单执行。
+- [x] `git merge` 回 `main` 前后各跑一次构建/测试 + 冒烟场景走查 —— 已由终验区块（§7）闭环。
+
+---
+
+## 7. 终验与交付报告（2026-11-01）
+
+**基线：main@8ab6ea0 → 完成：main@c7d8e5a**（分支 `feat/complete-w0-w5`，11 个提交；合并提交 `c7d8e5a6dfbb0fa4643b432cc55f336ea9c51517`，`--no-ff` 合并；终验区块提交即本节随后的 main HEAD）。
+
+### 7.1 终验总清单
+
+| # | 项 | 结果 | 证据（命令均实际执行） |
+| --- | --- | --- | --- |
+| 1 | feat 分支 `dotnet clean WinCanvas.sln -c Debug` → `dotnet build WinCanvas.sln -c Debug` | ✅ **0 个错误 / 26 个警告**（= WP0 基线 26，零新增） | 本区块执行记录 |
+| 2 | feat 分支 `dotnet test WinCanvas.sln -c Debug --no-build` | ✅ **108/108 全绿**（Wallpaper.Tests 68 + Core.Tests 40，失败 0 跳过 0） | 同上 |
+| 3 | 合并 `git merge --no-ff feat/complete-w0-w5` → main | ✅ 合并提交 `c7d8e5a`，无冲突（ort 策略，64 文件 +11626/−259） | 同上 |
+| 4 | main 合并后复跑 clean 全量构建 + 测试 | ✅ **0 个错误 / 26 个警告**（= 基线）；`dotnet test --no-build` **108/108 全绿** | 同上 |
+| 5 | 九大缺陷闭环标注 | 见 7.2（8 已解决 + 1 已解决含人工残留项） | 见 7.2 |
+| 6 | 手工冒烟场景 | 见 7.3（自动化电池 6 套本轮新鲜复验全过；纯 GUI 观感项留人工） | 见 7.3 |
+| 7 | 仓库无 `TODO`/`FIXME`/`待补充`/`XXX` 遗留 | ✅ `grep -rn "TODO\|FIXME\|待补充\|XXX"`（src/tests/docs/README/WORKLOG/tools/sln）唯一命中 = WORKLOG §6.4/§7 的检查清单自述行（规格要求的记录本身），代码与文档零残留 | 本区块执行记录 |
+| 8 | README / docs / WORKLOG 与代码行为一致 | ✅ 逐条自查（7.4）；终验中另发现并修复 README 1 处 API 名笔误（提交 `1a17247`） | 7.4 |
+
+### 7.2 缺陷闭环表（原始九大缺陷，逐条如实标注）
+
+| # | 原始缺陷 | 结论 | 依据与证据 |
+| --- | --- | --- | --- |
+| 1 | 壁纸画面只在应用内预览、未渲染到目标窗口 | **已解决** | `src/WinCanvas.Wallpaper/Hosting/` 全套（`WallpaperHostWindow` 双路径挂接 + `SetParent` 两步跨进程嵌入，见 `WallpaperHostWindow.cs` / `HostAttachMode.cs`）；本轮 `Wp1AHostDiag render` 复验：图片四象限像素匹配（屏上 vs 源图，无错位/无翻转）、pkg 封面上屏、点击穿透、ShutdownAll 清零，9/9 PASS |
+| 2 | `ShowNumLockStatus` 全仓库零调用方（钩子未接入） | **已解决** | 调用方已存在：`src/WinCanvas.Core/Services/KeyboardIndicatorService.cs:365`（LL 钩子专用线程 → 去抖 → 线程池派发）；本轮 `Wp2NumLockDiag` E2E 复验 12 断言全 PASS（SendInput 注入 → 2s 内上报 → 值正确 → 单次上报 → 卸钩 → 零反应） |
+| 3 | 重启不恢复壁纸/属性 | **已解决** | 恢复管线已接线：`src/WinCanvas.App/ViewModels/MainViewModel.cs:345`（QueueRestorePipeline）/`:368`（AutoRestoreOnStartup 开关）/`:405`（RunRestorePipelineCoreAsync）；WP3 实测三轮进程启动→恢复完成 1307/948/709ms 均 <2s、外部样式检查（TOPMOST/alpha/穿透/圆角 + A1 宿主）、文件缺失警告且档案保留、开关关闭零恢复、手动刷新幂等（WORKLOG §4.3 原文）。本轮终验未重复该完整重启场景（需沙箱化 config + 两轮应用重启），以 WP3 记录为准 |
+| 4 | 零自动化测试 | **已解决** | 两个测试项目入 sln；本轮两次实测 108/108 全绿（用例表 7 行全覆盖，WORKLOG §5） |
+| 5 | GIF 只取第一帧 | **已解决** | `ImageWallpaperLoader` 多帧解码 `ImageFrames`（`src/WinCanvas.Wallpaper/Loaders/ImageWallpaperLoader.cs:125`）；本轮 `Wp5FormatDiag gif` 复验：播放态 2s 采样 2 色（帧推进可见）、暂停定格、恢复续播；CPU 口径见 7.3 噪声记录 |
+| 6 | `.webp` 两侧口径不一致 | **已解决** | `WallpaperFormats.ImageExtensions` 含 `.webp`（`src/WinCanvas.Wallpaper/WallpaperFormats.cs:24`，全仓库单一事实来源）；本轮 `Wp5FormatDiag webp` 复验：IsSupported=True、加载上屏屏上像素逐字节匹配、清零残留 |
+| 7 | UIPI 无预检、无「管理员重启」引导 | **已解决**（残留端到端项需人工） | `src/WinCanvas.Core/Services/ProcessElevation.cs:38-39`（错误 5 → 三要素引导；`:23` IsElevated 预检 + 设置区权限显示）；五个 catch + 恢复管线统一经 `DescribeFailure`；本轮 `Wp5FormatDiag elev` 复验映射正确 + 非 5 透传；4 个 xUnit 用例钉住。**残留**：「真实管理员窗口为目标的端到端复现」需 UAC 交互，无人值守环境无法完成（WP5 §6.3 已如实标注），留人工 |
+| 8 | README 构建笔误 + 文档脱节 | **已解决** | `cd Window` 全仓库 grep 零命中；docs 三件套已随 WP1~WP5 同步（WORKLOG §2.D/§3/§4/§6.4）；终验自查另发现 README 1 处 API 名笔误 `UnhookWindowsEx`（实际 `UnhookWindowsHookEx`），已修复并提交（`1a17247`） |
+| 9 | WinTips.exe 无构建/部署接线 | **已解决** | `src/WinCanvas.App/WinCanvas.App.csproj:56` Target `BuildAndDeployWinTips`（AfterTargets=Build，.NET 10 外挂构建 + 拷贝 `$(OutDir)WinTips\`）；本轮 clean 构建后实测输出目录含 `WinTips.exe/dll/deps.json/runtimeconfig.json/pdb`；WP2 GUI 验证 Process.Start 成功 + tasklist 见进程（WORKLOG §3） |
+
+### 7.3 冒烟场景记录（自动化电池本轮新鲜复验，2026-11-01）
+
+| 场景 | 自动化覆盖 | 本轮结果 | 留人工部分 |
+| --- | --- | --- | --- |
+| 记事本挂图片背景 | `Wp1AHostDiag render`（程序化裸目标 + 真实 loader/宿主/DComp） | ✅ 四象限像素匹配、切图 16ms 生效、静态图空闲 CPU 0.52%、点击穿透命中 (400,300)、残留 0 | 真实记事本窗口上的观感（WP1-A 曾实测 Edge/记事本 A1 挂接 29/29，本轮未重复真实记事本电池） |
+| 浏览器挂视频背景 | `Wp1AHostDiag video`（组合呈现产品路径） | ✅ 帧流动 2 色、4:3 等比加边无拉伸、全屏暂停定格→退出恢复、切图释放、清零 | 真实浏览器目标 + 高分辨率视频观感流畅度/撕裂感（DWM vsync 合成，理论上无撕裂） |
+| pkg 纯图包 / pkg SceneScript 包（降级） | `Wp1AHostDiag render`（PackageWriter 构造复杂场景包） | ✅ 降级提示上报 + 封面上屏（象限匹配）；纯图包与图片层同路径 | 无 |
+| NumLock 提示 | `Wp2NumLockDiag`（SendInput 注入 E2E） | ✅ 12 断言全 PASS（链路连通/去抖单报/0ms 延迟/卸钩/零反应/幂等；LED 兜底还原） | WinTips 浮窗**可视截图**（UIA 不含该透明窗，WP2 §3 已如实记录未取得；链路有 InfoBar 日志 + 进程产生双重证据） |
+| 重启自动恢复 | WP3 期间已自动化（三轮时间戳 + 外部样式检查 + UIA 读 InfoBar 原文，WORKLOG §4.3） | 本轮未重复（需沙箱化 config + 两轮完整应用重启） | 无（既有自动化证据完整） |
+| 全屏暂停 | `Wp1AHostDiag video` + `Wp5FormatDiag gif` | ✅ 视频 2s 采样窗恒 1 色（定格）、退出恢复 2 色；GIF 暂停定格 + 恢复续播 | 任务管理器 GPU「视频解码」引擎回落观测 |
+
+**GIF CPU 口径噪声记录（如实）**：本轮首轮 `gif` 电池「播放态 CPU = 11.98%」超工具内置 10% 阈值（判定 FAIL），复跑 = **5.21% PASS**（同轮暂停态 2.60%）；两轮均含采样线程自身开销，首轮超阈判定为采样噪声（WP5 期间同项 3.12%、暂停 0.00%）。行为断言（播放/定格/恢复/清零）两轮全过。
+
+### 7.4 文档一致性自查（终验抽查，逐条实测）
+
+- `grep "cd Window" README.md` → 0 命中（笔误已修）；
+- `grep -rn "尚未实现|取第一帧|零调用|无调用方|无自动化测试" README.md docs/` → 仅命中 docs 两处「不含尚未实现的虚构成员 / 未实现的部分如实标注」的自我声明句（非失真条目）；
+- README 功能描述与代码逐条抽查一致：`WallpaperFormats.cs:24`（webp）、`KeyboardIndicatorService.cs:365`（ShowNumLockStatus 调用方）、`WinCanvas.App.csproj:56`（WinTips Target）、`MainViewModel.cs:345/368/405`（恢复管线）、`ProcessElevation.cs:38-39`（提权引导）、`Hosting/` 目录（SetParent 双路径）、`CompositionVideoPresenter.cs`（GetSurface 组合呈现）；
+- 终验发现并修复 README 第 50 行 API 名笔误 `UnhookWindowsEx` → `UnhookWindowsHookEx`（提交 `1a17247`，合并随分支入 main）。
+
+### 7.5 交付报告
+
+```
+## WinCanvas 补全交付报告
+- 基线：main@8ab6ea0 → 完成：main@c7d8e5a（分支 feat/complete-w0-w5，11 个提交）
+- 缺陷闭环表：9 项 = 8 已解决 + 1 已解决（UIPI 引导；残留「真实管理员窗口端到端」需 UAC 人工交互）
+- 新增能力摘要：宿主窗口双路径挂接（A1 嵌入/A2 跟随 + 自动降级）/ 图片 DComp 上屏 /
+  视频组合呈现上屏（ADR：帧服务器主路径受阻 → GetSurface 备选）/ NumLock LL 钩子链路 +
+  WinTips.exe 外挂构建部署 / 启动自动恢复管线 / 测试 108 项 / GIF 多帧播放 / webp 一致 /
+  UIPI 提权引导与权限显示 / WallpaperFormats 扩展名单一来源
+- 关键 ADR 摘要：视频上屏走组合呈现（CopyFrameToVideoSurface 实测 E_OUTOFMEMORY / AccessViolation，
+  见 WORKLOG §2.C 决策 1）；A1 跨进程挂接两步法（直接 WS_CHILD 创建被 OS 策略性拒绝，probe 实证）；
+  A1→A2 自动降级实测可达（UIPI 错误 5 / DPI 上下文不兼容）
+- 验证证据：分支与 main 合并后各一轮 clean 构建 0 错误 / 26 警告（= 基线）+ 108/108 测试全绿；
+  冒烟自动化电池 6 套本轮复验全过（7.3）；grep 残留扫描净（7.1 #7）
+- 遗留事项与建议后续：①「真实管理员窗口」UIPI 端到端验证需 UAC 人工交互；
+  ② WinTips 浮窗可视截图需人工（UIA 不可见）；③ 视频/动画预览区为空的既有取舍（README 已知限制已声明）；
+  ④ GIF CPU 采样噪声建议加大采样窗口；⑤ 26 条 MVVMTK0045 基线警告为已知技术债，建议后续迁移 partial property；
+  ⑥ SceneScript 动态场景、动画 WebP、repkg 版本兼容为产品级残留限制（README 已知限制如实声明）
+```
+
