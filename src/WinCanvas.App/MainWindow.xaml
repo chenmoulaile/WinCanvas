@@ -193,6 +193,14 @@
                                 BorderThickness="1"
                                 CornerRadius="8" Padding="16">
                             <StackPanel Spacing="16">
+                                <!-- 当前权限（WP5 UIPI 预检）：进程启动时检测一次，运行期不变；
+                                     用户据此判断对管理员窗口操作失败时是否需要提权重启 -->
+                                <TextBlock Text="{x:Bind ViewModel.ElevationStatusText}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Opacity="0.8" TextWrapping="Wrap" />
+                                <!-- 启动自动恢复（WP3）：关闭后启动 / 刷新均不做恢复动作，档案仍保留 -->
+                                <ToggleSwitch Header="启动时自动恢复窗口状态"
+                                              IsOn="{x:Bind ViewModel.AutoRestoreOnStartup, Mode=TwoWay}" />
                                 <ToggleSwitch Header="WinTips 提示（NumLock 状态）"
                                               IsOn="{x:Bind ViewModel.WinTipsEnabled, Mode=TwoWay}" />
                                 <ToggleSwitch Header="FPS 性能监控悬浮显示（开发阶段）"

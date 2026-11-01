@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- TFM 与被测项目 WinCanvas.Wallpaper 完全一致（net8.0-windows10.0.19041.0），
+         与 WinCanvas.Core.Tests 的取法相同（WP0 确立的口径）：项目引用要求目标框架兼容。 -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- 测试程序集不打包、不生成文档文件，保持构建输出干净 -->
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <RootNamespace>WinCanvas.Wallpaper.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      测试栈与 WinCanvas.Core.Tests 完全同版本（WP0 引入，本机 NuGet 缓存已有，零网络依赖）：
+      - Microsoft.NET.Test.Sdk：VSTest 测试宿主与 `dotnet test` 入口；
+      - xunit：测试框架本体（Fact/Theory 断言体系）；
+      - xunit.runner.visualstudio：xUnit 与 VSTest 之间的适配器，PrivateAssets=all 防外溢。
+    -->
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 被测项目：WallpaperService / DynamicFrameRateController / PkgWallpaperLoader /
+         WallpaperHostWindow（internal，经被测项目 InternalsVisibleTo 访问）。
+         WinCanvas.Core 随传递引用带入（PkgWallpaperLoader 的返回类型依赖它）。 -->
+    <ProjectReference Include="..\..\src\WinCanvas.Wallpaper\WinCanvas.Wallpaper.csproj" />
+  </ItemGroup>
+
+</Project>

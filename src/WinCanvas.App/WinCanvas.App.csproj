@@ -41,4 +41,58 @@
     <ProjectReference Include="..\WinCanvas.Wallpaper\WinCanvas.Wallpaper.csproj" />
   </ItemGroup>
 
+  <!-- ===== WP2：WinTips.exe 外挂构建部署 =====
+       WinTips（ThirdParty/WinTips 子模块）是 net10.0-windows 的 WPF 程序，三自研项目是 net8.0 +
+       WinUI 3 —— 两代 TFM / 平台配置混入同一 sln 会互相污染，故不把 WinTips 加进 WinCanvas.sln，
+       而是在本工程 Build 完成后用 dotnet build 外挂构建（.NET 10 SDK）并把产物拷到 $(OutDir)WinTips\，
+       与 WinTipsIntegrationService.TryLocateWinTipsExe 的「程序目录旁 WinTips\WinTips.exe」候选路径天然接上。
+       构建失败只告警不阻断：exe 缺失时运行期走既有本地回退通道（InfoBar）。 -->
+  <PropertyGroup>
+    <!-- WinTips 子模块工程与其默认 Release 输出目录（net10.0-windows，无 RID、无平台子目录） -->
+    <WinTipsProject>$(MSBuildThisFileDirectory)..\..\ThirdParty\WinTips\WinTips.csproj</WinTipsProject>
+    <WinTipsBuildOutputDir>$(MSBuildThisFileDirectory)..\..\ThirdParty\WinTips\bin\Release\net10.0-windows\</WinTipsBuildOutputDir>
+  </PropertyGroup>
+
+  <Target Name="BuildAndDeployWinTips"
+          AfterTargets="Build"
+          Condition="'$(DesignTimeBuild)' != 'true'"
+          Inputs="$(WinTipsProject);$(MSBuildThisFileDirectory)..\..\ThirdParty\WinTips\**\*.cs;$(MSBuildThisFileDirectory)..\..\ThirdParty\WinTips\**\*.xaml"
+          Outputs="$(OutDir)WinTips\WinTips.exe">
+    <!-- 增量语义（Inputs/Outputs）：子模块源码未变化且 $(OutDir)WinTips\WinTips.exe 存在时整体跳过；
+         源码更新或产物被清理后自动重建，避免把过期 exe 留在部署目录。
+         子模块缺失时 Inputs 非空但仍跑进来，由下方 Exists 条件与专属告警给出人话提示；
+         属性先归零兜底：未真正执行外挂构建时不会误报「构建失败」。 -->
+    <PropertyGroup>
+      <WinTipsBuildExitCode Condition="'$(WinTipsBuildExitCode)' == ''">0</WinTipsBuildExitCode>
+    </PropertyGroup>
+
+    <!-- 1) 外挂构建（.NET 10 SDK）：IgnoreExitCode 使失败不阻断 App 构建，错误码落属性后统一告警 -->
+    <Exec Condition="Exists('$(WinTipsProject)')"
+          Command="dotnet build &quot;$(WinTipsProject)&quot; -c Release --nologo"
+          IgnoreExitCode="true"
+          ConsoleToMsBuild="true"
+          StandardOutputImportance="normal"
+          StandardErrorImportance="normal"
+          Timeout="300000">
+      <Output TaskParameter="ExitCode" PropertyName="WinTipsBuildExitCode" />
+    </Exec>
+
+    <!-- 2) 构建成功：把 exe 及其依赖（dll / deps.json / runtimeconfig.json / pdb）拷入部署目录 -->
+    <ItemGroup Condition="'$(WinTipsBuildExitCode)' == '0'">
+      <WinTipsDeployFiles Include="$(WinTipsBuildOutputDir)**\*.*" />
+    </ItemGroup>
+    <Copy Condition="'$(WinTipsBuildExitCode)' == '0' and '@(WinTipsDeployFiles)' != ''"
+          SourceFiles="@(WinTipsDeployFiles)"
+          DestinationFiles="@(WinTipsDeployFiles->'$(OutDir)WinTips\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Message Condition="'$(WinTipsBuildExitCode)' == '0' and '@(WinTipsDeployFiles)' != ''"
+             Text="WinTips.exe 已部署到 $(OutDir)WinTips\" Importance="normal" />
+
+    <!-- 3) 失败呈现：给出「失败 + 原因 + 用户能做什么」的明确告警（不阻断构建） -->
+    <Warning Condition="'$(WinTipsBuildExitCode)' != '0'"
+             Text="WinTips.exe 外挂构建失败（dotnet build 退出码 $(WinTipsBuildExitCode)）：NumLock 浮窗提示将不可用，运行期自动回退主界面 InfoBar 提示；请确认本机已安装 .NET 10 SDK（dotnet --list-sdks 应含 10.0.x）后重新构建。" />
+    <Warning Condition="!Exists('$(WinTipsProject)')"
+             Text="未找到 WinTips 子模块工程（ThirdParty/WinTips/WinTips.csproj）：请先执行 git submodule update --init 拉取子模块；本次构建不会部署 WinTips.exe，NumLock 提示走本地 InfoBar 回退通道。" />
+  </Target>
+
 </Project>

@@ -12,8 +12,8 @@ namespace WinCanvas.Core.Services;
 /// </summary>
 public sealed class ConfigurationService : IConfigurationService, IDisposable
 {
-    /// <summary>延迟写盘的防抖间隔：多次 Update 在该窗口内合并为一次落盘。</summary>
-    private static readonly TimeSpan DebounceDelay = TimeSpan.FromMilliseconds(500);
+    /// <summary>延迟写盘的默认防抖间隔：多次 Update 在该窗口内合并为一次落盘。</summary>
+    private static readonly TimeSpan DefaultDebounceDelay = TimeSpan.FromMilliseconds(500);
 
     /// <summary>序列化选项：中文原样输出（不转 \uXXXX）、缩进便于人工查看。</summary>
     private static readonly JsonSerializerOptions SerializerOptions = new()
@@ -27,6 +27,13 @@ public sealed class ConfigurationService : IConfigurationService, IDisposable
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     private readonly string _configFilePath;
+
+    /// <summary>
+    /// 本实例生效的防抖间隔：默认取 <see cref="DefaultDebounceDelay"/>（500ms），
+    /// 可经构造参数注入更短值——WP4 单元测试据此把「10 次快速 Update 合并为 1 次落盘」的
+    /// 验证从 500ms 级等待缩短到毫秒级（行为语义与生产值完全一致，只改时长）。
+    /// </summary>
+    private readonly TimeSpan _debounceDelay;
 
     /// <summary>保护内存缓存与防抖任务状态的对象锁。</summary>
     private readonly object _syncLock = new();
@@ -43,15 +50,33 @@ public sealed class ConfigurationService : IConfigurationService, IDisposable
         : this(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), // %APPDATA%
             "WinCanvas",
-            "config.json"))
+            "config.json"),
+            DefaultDebounceDelay)
     {
     }
 
-    /// <summary>测试用构造：允许注入配置文件路径。</summary>
+    /// <summary>测试用构造：允许注入配置文件路径（防抖间隔取默认 500ms）。</summary>
     /// <param name="configFilePath">config.json 的绝对路径。</param>
     public ConfigurationService(string configFilePath)
+        : this(configFilePath, DefaultDebounceDelay)
     {
+    }
+
+    /// <summary>
+    /// 测试用构造：允许同时注入配置文件路径与防抖间隔。
+    /// </summary>
+    /// <param name="configFilePath">config.json 的绝对路径。</param>
+    /// <param name="debounceDelay">防抖间隔；必须为正值（TimeSpan.Zero 或负值属于装配错误，尽早暴露）。</param>
+    /// <exception cref="ArgumentOutOfRangeException">防抖间隔非正值。</exception>
+    public ConfigurationService(string configFilePath, TimeSpan debounceDelay)
+    {
+        if (debounceDelay <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(debounceDelay), debounceDelay, "防抖间隔必须为正值。");
+        }
+
         _configFilePath = configFilePath;
+        _debounceDelay = debounceDelay;
     }
 
     /// <summary>配置文件完整路径（供诊断使用）。</summary>
@@ -186,14 +211,14 @@ public sealed class ConfigurationService : IConfigurationService, IDisposable
     }
 
     /// <summary>
-    /// 防抖延迟写盘主体：等待 <see cref="DebounceDelay"/>，期间被取消则直接返回。
+    /// 防抖延迟写盘主体：等待 <see cref="_debounceDelay"/>，期间被取消则直接返回。
     /// </summary>
     private async Task DelayedSaveAsync(CancellationToken token)
     {
         AppConfig? snapshot;
         try
         {
-            await Task.Delay(DebounceDelay, token).ConfigureAwait(false);
+            await Task.Delay(_debounceDelay, token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

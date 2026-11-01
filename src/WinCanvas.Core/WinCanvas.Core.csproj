@@ -15,4 +15,12 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 内部类型对测试程序集开放（WP4）：
+         NumLockStateDebouncer（钩子去抖纯逻辑，抽离自 KeyboardIndicatorService 便于无钩子单测）
+         不宜提升为 public API（它只服务于键盘指示器内部），
+         故保持 internal 并按总提示词 WP4 要求对测试项目开 InternalsVisibleTo。 -->
+    <InternalsVisibleTo Include="WinCanvas.Core.Tests" />
+  </ItemGroup>
+
 </Project>

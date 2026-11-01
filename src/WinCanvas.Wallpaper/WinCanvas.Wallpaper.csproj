@@ -8,7 +8,25 @@
     <RootNamespace>WinCanvas.Wallpaper</RootNamespace>
     <!-- 关闭对旧式 P/Invoke 分析器的强制告警，Native/NativeMethods 中已按规范手写注释 -->
     <NoWarn>$(NoWarn);CA1401;CA5392</NoWarn>
+    <!-- Rendering/BgraSnapshot.cs 的指针级像素拷贝（IMemoryBufferByteAccess 直取 SoftwareBitmap 原生缓冲）需要 unsafe -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 内部类型对诊断 / 测试程序集开放（WP1-A：tools/Wp1AHostDiag 挂接验收命令；
+         WP4 的 WinCanvas.Wallpaper.Tests 也将按总提示词加入此名单） -->
+    <InternalsVisibleTo Include="Wp1AHostDiag" />
+    <!-- 内部类型对诊断程序集开放（WP5：tools/Wp5FormatDiag GIF / webp 行为验收命令——
+         与 Wp1AHostDiag 同路线，需要访问 internal 的 WallpaperHostWindow / WallpaperHostPump） -->
+    <InternalsVisibleTo Include="Wp5FormatDiag" />
+    <!-- 内部类型对 App 层开放（WP1-B：WallpaperPreviewController 使用下沉到本项目的
+         共享像素快照工具 BitmapSnapshot / BgraSnapshot，规格 B.3 要求预览与宿主共用一份逻辑） -->
+    <InternalsVisibleTo Include="WinCanvas.App" />
+    <!-- 内部类型对测试程序集开放（WP4）：WallpaperHostWindow 为 internal（服务层专用宿主抽象），
+         但其挂接矩形 / DPI 换算纯函数与 PkgWallpaperLoader 的 SafeJoin / DetectComplexScene /
+         FindCoverImage 纯逻辑均按总提示词 WP4 用例表要求可单测——保持 internal 不进公共 API。 -->
+    <InternalsVisibleTo Include="WinCanvas.Wallpaper.Tests" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- WinCanvas.Core：IWallpaperService / IStatusNotifier 接口与模型 -->

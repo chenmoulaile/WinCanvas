@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- WP1 阶段 A 挂接验证的临时诊断命令（规格允许「验证代码写入临时诊断命令或测试」）。
+         不加入 WinCanvas.sln：避免污染基线 warning 门禁与测试口径；
+         单独以 dotnet run（带项目路径参数）运行。TFM 与被测的 WinCanvas.Wallpaper 一致。 -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Wp1AHostDiag</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <!-- dcomp 探针需要指针写表面像素 -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 被测对象：WallpaperHostWindow（宿主窗口与双路径挂接） -->
+    <ProjectReference Include="..\..\src\WinCanvas.Wallpaper\WinCanvas.Wallpaper.csproj" />
+  </ItemGroup>
+
+</Project>

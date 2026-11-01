@@ -21,6 +21,17 @@ public interface IWallpaperService
     Task UpdateWallpaperAsync(IntPtr hwnd, string path);
 
     /// <summary>
+    /// 查询指定窗口当前是否已挂着「同一背景文件」的活动壁纸会话（WP3 引入）。
+    /// 供启动 / 刷新时的档案恢复管线判重：会话已存在则跳过重复加载
+    /// （图片重复解码、pkg 重复解包都是纯浪费）。实现直接查询服务内部的
+    /// 会话字典（<c>_sessions</c>），不引入新的锁体系。
+    /// </summary>
+    /// <param name="hwnd">承载壁纸的窗口句柄。</param>
+    /// <param name="path">背景资源路径（与档案里保存的一致）。</param>
+    /// <returns>true = 该窗口已有同一背景文件的活动会话（恢复可跳过）。</returns>
+    bool IsBackgroundActive(IntPtr hwnd, string path);
+
+    /// <summary>
     /// 暂停渲染（例如系统进入省电模式或窗口不可见时）。
     /// </summary>
     void PauseRendering();
@@ -29,4 +40,11 @@ public interface IWallpaperService
     /// 恢复渲染。
     /// </summary>
     void ResumeRendering();
+
+    /// <summary>
+    /// 销毁全部壁纸会话与宿主窗口（应用退出时调用，WP1-A 引入）。
+    /// 同步语义：返回时全部 WinEvent 钩子已卸载、全部宿主窗口已销毁（内部经宿主专用
+    /// 消息线程往返完成销毁，跨线程 DestroyWindow 非法）。
+    /// </summary>
+    void ShutdownAll();
 }

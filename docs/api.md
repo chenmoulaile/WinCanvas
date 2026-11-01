@@ -1,4 +1,4 @@
-﻿# API 说明
+﻿﻿# API 说明
 
 本文档全部接口与模型**从真实代码抄录**（来源文件在每节标注），不包含尚未实现的虚构成员。
 
@@ -77,6 +77,15 @@ public interface IWallpaperService
     /// <summary>运行期切换指定窗口的背景资源。</summary>
     Task UpdateWallpaperAsync(IntPtr hwnd, string path);
 
+    /// <summary>
+    /// 查询指定窗口当前是否已挂着「同一背景文件」的活动壁纸会话（WP3）。
+    /// 供启动 / 刷新时的档案恢复管线判重：会话已存在则跳过重复加载。
+    /// </summary>
+    /// <param name="hwnd">承载壁纸的窗口句柄。</param>
+    /// <param name="path">背景资源路径（与档案里保存的一致）。</param>
+    /// <returns>true = 该窗口已有同一背景文件的活动会话（恢复可跳过）。</returns>
+    bool IsBackgroundActive(IntPtr hwnd, string path);
+
     /// <summary>暂停渲染（例如系统进入省电模式或窗口不可见时）。</summary>
     void PauseRendering();
 
@@ -102,12 +111,12 @@ public interface IStatusNotifier
 
 ### 2.1 WindowState（持久化模型，src/WinCanvas.Core/Models/WindowState.cs）
 
-单个被管理窗口的持久化状态。窗口唯一标识 = 「进程名 + 标题」组合键，辅以 hwnd 值哈希做运行期匹配（hwnd 重启后可能变化，恢复时以 `Key` 为主键）。
+单个被管理窗口的持久化状态。窗口唯一标识 = 「进程名|类名」组合键（成员转义防碰撞），辅以 hwnd 值哈希做运行期匹配（hwnd 重启后可能变化，恢复时以 `Key` 为主键；WP3 恢复管线亦按 `Key` 重新定位窗口）。
 
 ```csharp
 public sealed class WindowState
 {
-    /// <summary>窗口唯一组合键："进程名|标题"（见 WindowInfo.Key）。</summary>
+    /// <summary>窗口唯一组合键："进程名|类名"（成员转义后拼接，见 WindowInfo.Key）。</summary>
     public string Key { get; set; } = string.Empty;
 
     /// <summary>hwnd 句柄值的哈希（当前实现取句柄的整数值），仅作运行期辅助匹配。</summary>
@@ -151,6 +160,12 @@ public sealed class AppConfig
     /// <summary>配置文件格式版本，便于将来迁移。</summary>
     public int Version { get; set; } = 1;
 
+    /// <summary>
+    /// 启动时是否自动恢复已保存档案的窗口（置顶 / 透明 / 穿透 / 圆角 / 背景）（WP3）。
+    /// 默认 true；关闭后启动与手动刷新都跳过整个恢复管线，档案仍保留。
+    /// </summary>
+    public bool AutoRestoreOnStartup { get; set; } = true;
+
     /// <summary>各窗口的持久化状态（按 WindowState.Key 唯一）。</summary>
     public List<WindowState> Windows { get; set; } = new();
 }
@@ -161,8 +176,8 @@ public sealed class AppConfig
 ```csharp
 public sealed record WindowInfo(IntPtr Hwnd, string Title, string ClassName, string ProcessName, int ProcessId)
 {
-    /// <summary>「进程名|标题」组合键，与 WindowState.Key 同一规则。</summary>
-    public string Key => $"{ProcessName}|{Title}";
+    /// <summary>「进程名|类名」组合键，成员转义（\ 与 | 转义）防碰撞，与 WindowState.Key 同一规则。</summary>
+    public string Key => $"{Encode(ProcessName)}|{Encode(ClassName)}";
 
     /// <summary>hwnd 句柄值哈希，与 WindowState.HwndHash 同一规则。</summary>
     public long HwndHash => Hwnd.ToInt64();
@@ -213,7 +228,35 @@ public sealed class WallpaperService : IWallpaperService
 }
 ```
 
-### 3.2 WinTipsIntegrationService（实现 IStatusNotifier，src/WinCanvas.Wallpaper/WinTipsIntegrationService.cs）
+### 3.2 WallpaperService 宿主/事件扩展（WP1，src/WinCanvas.Wallpaper/）
+
+WP1 在 `WallpaperService` 上新增的公共成员与事件（均由服务内部接线，App 层只订阅）：
+
+```csharp
+public sealed class WallpaperService : IWallpaperService
+{
+    /// <summary>会话宿主挂接模式确定 / 变化（创建成功或 A1 降级 A2）。
+    /// pump 线程或线程池触发；App 层据此在状态文本显示「嵌入模式 / 跟随模式」。</summary>
+    public event Action<IntPtr, HostAttachMode>? SessionHostModeChanged;
+
+    /// <summary>销毁全部会话与宿主（IWallpaperService 新增；应用退出时调用）。</summary>
+    public void ShutdownAll();
+}
+```
+
+### 3.3 宿主窗口类型（WP1，src/WinCanvas.Wallpaper/Hosting/，internal）
+
+| 类型 | 职责 |
+| --- | --- |
+| `WallpaperHostWindow`（internal sealed） | 宿主窗口封装：窗口类注册、A1 跨进程 `WS_CHILD` 嵌入 / A2 顶层跟随、WinEvent 跟随、A1→A2 自动降级、目标销毁上报。公共成员：`TryCreate(target, [preferred], out error)`、`RenderImage(BgraSnapshot)`、`BeginVideo(MediaPlayer)`、`UpdateVideoLayout(w, h)`、`EndVideo()`、`CountAliveHosts(processIdFilter)`、事件 `AttachModeChanged` / `TargetLost` / `ClientSizeChanged(target, w, h)` |
+| `HostAttachMode`（internal enum） | `Embed`（A1 跨进程子窗口嵌入）/ `Follow`（A2 顶层跟随） |
+| `WallpaperHostRenderer`（internal sealed） | DComp 图像渲染器：设备树 + `BeginDraw → GetDC → StretchDIBits → EndDraw → Commit`；表面按客户区尺寸重建；设备失陷整树重建 |
+| `CompositionVideoPresenter`（internal sealed） | 视频组合呈现（ADR：GetSurface + DesktopWindowTarget + SpriteVisual 等比加边）；自持专用 DispatcherQueue 线程 |
+| `WallpaperHostPump`（internal sealed） | 宿主专用消息线程：跨线程 DestroyWindow 合法性与 WINEVENT_OUTOFCONTEXT 回调的统一载体；`Execute(action)` 同步封送 |
+| `HostNativeMethods` / `DcompNativeMethods`（internal static） | 宿主 / DComp 专用 P/Invoke（全部带规格级中文注释） |
+| `BitmapSnapshot` / `BgraSnapshot`（internal，Rendering/） | SoftwareBitmap → PBgra8 紧密快照的共享拷贝工具（预览与宿主共用一份实现） |
+
+### 3.4 WinTipsIntegrationService（实现 IStatusNotifier，src/WinCanvas.Wallpaper/WinTipsIntegrationService.cs）
 
 ```csharp
 public sealed class WinTipsIntegrationService : IStatusNotifier
@@ -232,11 +275,41 @@ public sealed class WinTipsIntegrationService : IStatusNotifier
 
     public WinTipsIntegrationService(string? explicitExePath = null);
 
-    // 接口成员：ShowNumLockStatus(bool isLocked) —— 当前无调用方（键盘钩子未实现）
+    // 接口成员：ShowNumLockStatus(bool isLocked) —— 调用方 = Core 的 KeyboardIndicatorService（WP2）
 }
 ```
 
-### 3.3 DynamicFrameRateController（src/WinCanvas.Wallpaper/Rendering/DynamicFrameRateController.cs）
+### 3.5 KeyboardIndicatorService（src/WinCanvas.Core/Services/KeyboardIndicatorService.cs，WP2 新增）
+
+NumLock LL 键盘钩子服务：专用消息线程安装/回调/卸载，状态变化去抖后经线程池上报 `IStatusNotifier`。
+
+```csharp
+public sealed class KeyboardIndicatorService : IDisposable
+{
+    /// <summary>诊断打点（安装/状态变化/去抖抑制/Unhook 完成），同时落
+    /// %LOCALAPPDATA%/WinCanvas/logs/keyboard-diag.log。触发线程 = 钩子线程 / 线程池。</summary>
+    public event Action<string>? Diagnostics;
+
+    /// <summary>钩子当前是否已安装（跨周期真实口径；Stop 后钩子线程收尾完成前仍可为 true）。</summary>
+    public bool IsHookInstalled { get; }
+
+    /// <param name="notifier">上报目标（组合根注入 WinTipsIntegrationService）。</param>
+    public KeyboardIndicatorService(IStatusNotifier notifier);
+
+    /// <summary>启动监听（幂等）。只做托管线程创建，钩子安装发生在专用线程内部——UI 线程零 P/Invoke。</summary>
+    public void Start();
+
+    /// <summary>停止监听（幂等）。投递 WM_QUIT 与 Join 派发线程池，调用方立即返回。</summary>
+    public void Stop();
+
+    /// <summary>显式同步卸钩（有界等待），应用退出时由 MainWindow.Closed 调用。</summary>
+    public void Dispose();
+}
+```
+
+配套 P/Invoke（`src/WinCanvas.Core/Native/NativeMethods.cs`，注释规格同既有条目）：`SetWindowsHookExW` / `UnhookWindowsHookEx` / `CallNextHookEx` / `GetKeyState` / `PostThreadMessageW` / `GetMessageW` / `PeekMessageW` / `GetModuleHandleW` / `GetCurrentThreadId`，常量 `WH_KEYBOARD_LL(13)` / `VK_NUMLOCK(0x90)` / `WM_KEYDOWN(0x0100)` / `WM_KEYUP(0x0101)` / `WM_QUIT(0x0012)` / `HC_ACTION(0)` / `LLKHF_INJECTED(0x10)`，类型 `LowLevelKeyboardProc` / `KBDLLHOOKSTRUCT` / `MSG` / `POINT`。
+
+### 3.6 DynamicFrameRateController（src/WinCanvas.Wallpaper/Rendering/DynamicFrameRateController.cs）
 
 纯状态机，不持有线程资源。三档策略：窗口激活 60fps / 非激活 15fps / 全屏前台或用户暂停完全暂停。
 
@@ -259,7 +332,7 @@ public sealed class DynamicFrameRateController
 }
 ```
 
-### 3.4 WallpaperRenderLoop（src/WinCanvas.Wallpaper/Rendering/WallpaperRenderLoop.cs）
+### 3.7 WallpaperRenderLoop（src/WinCanvas.Wallpaper/Rendering/WallpaperRenderLoop.cs）
 
 壁纸专用后台渲染线程（线程名 `WinCanvas.Wallpaper.Render`，IsBackground、BelowNormal 优先级）。
 
@@ -281,18 +354,22 @@ public sealed class WallpaperRenderLoop : IDisposable
 }
 ```
 
-### 3.5 加载器（src/WinCanvas.Wallpaper/Loaders/）
+### 3.8 加载器（src/WinCanvas.Wallpaper/Loaders/）
 
 ```csharp
-// ImageWallpaperLoader：第一层静态图片（.jpg/.jpeg/.png/.bmp/.gif），GIF 取第一帧
-public static readonly string[] SupportedExtensions;                 // { ".jpg", ".jpeg", ".png", ".bmp", ".gif" }
-public static bool IsSupported(string path);
-// 加载并缩放到目标分辨率（<=0 不缩放）；返回 ImageFrame 为 Bgra8 SoftwareBitmap
+// ImageWallpaperLoader：第一层图片（扩展名口径 = WallpaperFormats.ImageExtensions，
+// .jpg/.jpeg/.png/.bmp/.gif/.webp；SupportedExtensions 字段为该数组的别名，仅为 API 兼容保留）
+public static readonly string[] SupportedExtensions;                 // = WallpaperFormats.ImageExtensions
+public static bool IsSupported(string path);                         // = WallpaperFormats.IsImage(path)
+// 加载并缩放到目标分辨率（<=0 不缩放）；返回 ImageFrame 为 Bgra8 SoftwareBitmap。
+// 多帧 GIF（WP5）：解码全部帧填入 ImageFrames（每帧含 Bgra8 画面与 GIF 帧延迟），
+// ImageFrame = 首帧；帧数受内存预算上限（256MB / 单帧字节，2~240 帧）截断
 public static WallpaperSource Load(string path, int targetWidth, int targetHeight);
 
-// VideoWallpaperLoader：第二层视频（.mp4/.m4v/.mov/.webm/.wmv/.mkv）
-public static readonly string[] SupportedExtensions;
-public static bool IsSupported(string path);
+// VideoWallpaperLoader：第二层视频（扩展名口径 = WallpaperFormats.VideoExtensions，
+// .mp4/.m4v/.mov/.webm/.wmv/.mkv/.avi；SupportedExtensions 同为别名）
+public static readonly string[] SupportedExtensions;                 // = WallpaperFormats.VideoExtensions
+public static bool IsSupported(string path);                         // = WallpaperFormats.IsVideo(path)
 // 创建 MediaPlayer（静音、循环、不自动播放），Player 非空
 public static WallpaperSource Load(string path);
 
@@ -301,7 +378,7 @@ public static WallpaperSource Load(string pkgPath);
 // 抛 FileNotFoundException（文件不存在）/ InvalidDataException（pkg 头魔数不合法）
 ```
 
-### 3.6 模型
+### 3.9 模型
 
 ```csharp
 /// <summary>背景资源的实际类型（三层策略的判定结果）。</summary>
@@ -320,7 +397,8 @@ public enum WallpaperRenderState
 public sealed record WallpaperSource : IDisposable
 {
     public WallpaperKind Kind { get; init; }          // 实际加载的资源类型
-    public SoftwareBitmap? ImageFrame { get; init; }  // 图片层帧（pkg 降级封面图时也非空）
+    public SoftwareBitmap? ImageFrame { get; init; }  // 图片层帧（pkg 降级封面图时也非空；动画 GIF 时 = 首帧）
+    public IReadOnlyList<WallpaperAnimationFrame>? ImageFrames { get; init; } // 动画帧集合（WP5：多帧 GIF 非空，null = 静态）
     public MediaPlayer? Player { get; init; }         // 视频层播放器（App 端 SetMediaPlayer 绑定）
     public string? ExtractedRoot { get; init; }       // pkg 解包缓存目录
     public string? SceneJsonPath { get; init; }       // pkg 内 scene.json 完整路径
@@ -328,15 +406,64 @@ public sealed record WallpaperSource : IDisposable
     public string? StatusMessage { get; init; }       // 需上报给用户的明确提示
     public string? VideoPath { get; init; }           // 视频资源的磁盘路径
     public string OriginalPath { get; init; }         // 原始资源路径
-    public void Dispose();                            // 释放 ImageFrame 与 Player
+    public void Dispose();                            // 释放 ImageFrames（含首帧）或 ImageFrame，与 Player
+}
+
+/// <summary>动画壁纸的单帧（WP5）：Bgra8 Premultiplied 画面 + 该帧展示时长。</summary>
+public sealed record WallpaperAnimationFrame(SoftwareBitmap Frame, TimeSpan Delay);
+```
+
+### 3.10 WallpaperFormats（src/WinCanvas.Wallpaper/WallpaperFormats.cs，WP5 新增）
+
+壁纸扩展名与类型判定的**全仓库单一事实来源**：三层加载器、`WallpaperService.PrepareSource`
+分派、`MainViewModel.DetectBackgroundType`、`FilePickerService` 过滤器全部引用本类，
+禁止任何消费方再自持字面扩展名列表（.webp / .avi 的两侧漂移即此前各自维护的缺陷来源）。
+
+```csharp
+public static class WallpaperFormats
+{
+    public static readonly string[] ImageExtensions; // { ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp" }
+    public static readonly string[] VideoExtensions; // { ".mp4", ".m4v", ".mov", ".webm", ".wmv", ".mkv", ".avi" }
+    public const string PkgExtension = ".pkg";
+
+    public static bool IsImage(string path);        // 按扩展名判定（大小写不敏感）
+    public static bool IsVideo(string path);
+    public static bool IsPkg(string path);
+    public static WallpaperKind? DetectKind(string path); // 不受支持的扩展名返回 null
 }
 ```
+
+### 3.11 ProcessElevation（src/WinCanvas.Core/Services/ProcessElevation.cs，WP5 新增）
+
+进程提权检测与 UIPI 失败的引导文案。检测手段为 BCL `WindowsPrincipal.IsInRole(Administrator)`
+（取舍：`IsUserAnAdmin` 已被微软标注不推荐；令牌完整性级别需两个 P/Invoke——注释即 ADR），
+结果进程生命周期内不变并缓存为静态只读值。
+
+```csharp
+public static class ProcessElevation
+{
+    /// <summary>当前进程是否以管理员令牌运行（首次访问检测一次并缓存；身份不可得按未提升保守处理）。</summary>
+    public static bool IsElevated { get; }
+
+    /// <summary>
+    /// 把「对目标窗口操作失败」的异常翻译成三要素文案。
+    /// Win32Exception(NativeErrorCode=5)（ERROR_ACCESS_DENIED，UIPI 拦截的典型表现）时输出
+    /// 「目标窗口以更高权限运行…请以管理员身份重启 WinCanvas 后重试」的专项引导；
+    /// 其余异常保持「{operation}失败：{ex.Message}」透传。
+    /// </summary>
+    public static string DescribeFailure(Exception ex, string operation);
+}
+```
+
+调用方：`WindowItemViewModel` 的四类属性操作 catch、`MainViewModel` 恢复管线 catch
+（错误经 InfoBar 呈现）；设置区「当前权限」状态文本来自 `MainViewModel.ElevationStatusText`
+（构造时取 `ProcessElevation.IsElevated` 拼装，运行期不变）。
 
 ## 4. Win32 P/Invoke 接口清单
 
 完整签名与逐条中文注释见源码：`WinCanvas.Core/Native/NativeMethods.cs`（内部类）与 `WinCanvas.Wallpaper/Native/WallpaperNativeMethods.cs`（内部类）。清单如下：
 
-### NativeMethods（user32 / dwmapi）
+### NativeMethods（user32 / dwmapi / kernel32）
 
 | API | 用途 | 关键返回值 |
 | --- | --- | --- |
@@ -350,6 +477,13 @@ public sealed record WallpaperSource : IDisposable
 | `SetLayeredWindowAttributes(..., LWA_ALPHA)` | 整体 alpha 透明 | false = 失败 |
 | `GetWindowLongPtrCompat / SetWindowLongPtrCompat` | 32/64 位兼容的 GWL_EXSTYLE 读写 | 旧值；0 需结合 GetLastError 判断 |
 | `DwmGetWindowAttribute / DwmSetWindowAttribute` | DWM 属性读写（圆角 = 33） | HRESULT，负值为错误 |
+| `SetWindowsHookExW(WH_KEYBOARD_LL, proc, hMod, 0)` | 安装 LL 键盘钩子（WP2，须由带消息循环的专用线程调用） | IntPtr.Zero = 失败（GetLastError） |
+| `UnhookWindowsHookEx(IntPtr)` | 卸载钩子（WP2，钩子线程收尾时调用） | false = 失败 |
+| `CallNextHookEx(...)` | 钩子链放行（WP2，回调无条件调用，绝不吞键） | 下一钩子的返回值 |
+| `GetKeyState(int)` | 读虚拟键同步状态（WP2，切换位 bit0 为全局会话状态） | bit0=1 表示 NumLock 锁定 |
+| `PostThreadMessageW(uint, uint, IntPtr, IntPtr)` | 向钩子线程投递 WM_QUIT（WP2 停止流程） | false = 失败 |
+| `GetMessageW / PeekMessageW` | 钩子线程消息循环 / 建队（WP2） | 0 = WM_QUIT 退出循环 |
+| `GetModuleHandleW / GetCurrentThreadId` | 取主模块句柄（hMod）/ 钩子线程 Id（WP2） | 句柄 / 线程 Id |
 
 ### WallpaperNativeMethods（user32）
 
@@ -393,6 +527,7 @@ public sealed record WallpaperSource : IDisposable
 - 首次运行文件不存在 → 返回默认配置；JSON 损坏（`JsonException`）→ 回退默认配置，不崩溃。
 - `Update` 后 500ms 防抖合并写盘；应用退出时 `MainWindow.Closed` 调同步的 `Flush()` 强制落盘（消息循环即将退出，异步续延可能没有机会执行）。
 - `ConfigurationService(string configFilePath)` 构造可注入路径（测试用）；`ConfigFilePath` 属性供诊断。
+- `ConfigurationService(string configFilePath, TimeSpan debounceDelay)` 构造可同时注入防抖间隔（WP4，测试用；非正值抛 `ArgumentOutOfRangeException`），生产构造固定 500ms。
 
 ## 6. 命令行 / 自动化入口
 

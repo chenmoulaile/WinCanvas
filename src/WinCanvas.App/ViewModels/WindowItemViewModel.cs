@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using WinCanvas.Core.Interfaces;
 using WinCanvas.Core.Models;
+using WinCanvas.Core.Services;
 
 namespace WinCanvas.App.ViewModels;
 
@@ -129,7 +130,9 @@ public partial class WindowItemViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            _reportError($"恢复窗口「{DisplayName}」的已保存属性失败：{ex.Message}");
+            // UIPI 专项（WP5）：错误 5 时给出「以管理员身份重启」引导，其余保持原语义
+            _reportError(ProcessElevation.DescribeFailure(
+                ex, $"恢复窗口「{DisplayName}」的已保存属性"));
         }
     }
 
@@ -151,7 +154,7 @@ public partial class WindowItemViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            _reportError($"切换窗口「{DisplayName}」置顶失败：{ex.Message}");
+            _reportError(ProcessElevation.DescribeFailure(ex, $"切换窗口「{DisplayName}」置顶"));
         }
     }
 
@@ -173,7 +176,7 @@ public partial class WindowItemViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            _reportError($"设置窗口「{DisplayName}」透明度失败：{ex.Message}");
+            _reportError(ProcessElevation.DescribeFailure(ex, $"设置窗口「{DisplayName}」透明度"));
         }
     }
 
@@ -195,7 +198,7 @@ public partial class WindowItemViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            _reportError($"设置窗口「{DisplayName}」鼠标穿透失败：{ex.Message}");
+            _reportError(ProcessElevation.DescribeFailure(ex, $"设置窗口「{DisplayName}」鼠标穿透"));
         }
     }
 
@@ -217,7 +220,7 @@ public partial class WindowItemViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            _reportError($"设置窗口「{DisplayName}」圆角失败：{ex.Message}");
+            _reportError(ProcessElevation.DescribeFailure(ex, $"设置窗口「{DisplayName}」圆角"));
         }
     }
 }

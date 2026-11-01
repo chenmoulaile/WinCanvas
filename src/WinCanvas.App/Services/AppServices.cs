@@ -29,11 +29,20 @@ public sealed class AppServices
     /// 「WinTips 提示」开关通过其 <see cref="WinTipsIntegrationService.IsEnabled"/> 控制。</summary>
     public WinTipsIntegrationService WinTips { get; }
 
+    /// <summary>NumLock 键盘指示器服务（Core 实现，WP2）：LL 键盘钩子监听 NumLock 状态变化，
+    /// 状态变化时调用 <see cref="WinTips"/> 的 ShowNumLockStatus（浮窗或本地回退）。
+    /// 「WinTips 提示」开关同时控制它的 <see cref="KeyboardIndicatorService.Start"/> / Stop（钩子启停）。</summary>
+    public KeyboardIndicatorService KeyboardIndicator { get; }
+
     public AppServices()
     {
         Configuration = new ConfigurationService();
         WindowControl = new WindowControlService();
-        Wallpaper = new WallpaperService();
+        // 壁纸服务注入窗口控制服务：A2 跟随模式下目标不透明时自动应用轻度透明（WP1-A）
+        Wallpaper = new WallpaperService(WindowControl);
         WinTips = new WinTipsIntegrationService();
+        // NumLock 钩子注入 WinTips 集成服务作上报目标（WP2）：
+        // 钩子只负责「状态变化」事件源，是否对外呈现仍由 WinTips.IsEnabled 兜底把关
+        KeyboardIndicator = new KeyboardIndicatorService(WinTips);
     }
 }

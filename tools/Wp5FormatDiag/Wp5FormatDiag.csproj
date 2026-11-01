@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- WP5 行为验证诊断命令（GIF 播放 / webp 上屏 / 权限引导），与 Wp1AHostDiag 同路线：
+         不加入 WinCanvas.sln（不占基线 warning 门禁口径），单独 dotnet run 驱动。
+         TFM 与被测的 WinCanvas.Wallpaper 一致。 -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Wp5FormatDiag</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 被测对象：真实 WallpaperService 加载与宿主上屏链路（ImageSharp 经项目引用传递可用） -->
+    <ProjectReference Include="..\..\src\WinCanvas.Wallpaper\WinCanvas.Wallpaper.csproj" />
+  </ItemGroup>
+
+</Project>
