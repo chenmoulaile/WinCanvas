@@ -33,7 +33,8 @@ public sealed class AppServices
     {
         Configuration = new ConfigurationService();
         WindowControl = new WindowControlService();
-        Wallpaper = new WallpaperService();
+        // 壁纸服务注入窗口控制服务：A2 跟随模式下目标不透明时自动应用轻度透明（WP1-A）
+        Wallpaper = new WallpaperService(WindowControl);
         WinTips = new WinTipsIntegrationService();
     }
 }

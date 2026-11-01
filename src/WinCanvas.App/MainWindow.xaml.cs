@@ -46,10 +46,16 @@ public sealed partial class MainWindow : Window
             services.Wallpaper,
             global::Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
 
-        // 退出前确保配置落盘：窗口关闭后消息循环即将退出，FlushAsync 的异步续延
-        // （含 await File.WriteAllTextAsync 之后的 File.Move）可能没有机会执行，
-        // 必须用同步 Flush() 写完磁盘再返回，防抖窗口内（最后 500ms）的修改才不会丢。
-        Closed += (_, _) => services.Configuration.Flush();
+        // 退出前确保配置落盘 + 壁纸宿主全部销毁（WP1-A）：窗口关闭后消息循环即将退出，
+        // FlushAsync 的异步续延（含 await File.WriteAllTextAsync 之后的 File.Move）可能没有
+        // 机会执行，必须用同步 Flush() 写完磁盘再返回，防抖窗口内（最后 500ms）的修改才不会丢。
+        // ShutdownAll 同步卸载全部 WinEvent 钩子并销毁全部宿主窗口（经宿主专用消息线程往返），
+        // 满足「应用退出时全部宿主销毁」验收（EnumWindows 按类名计数应归零）。
+        Closed += (_, _) =>
+        {
+            services.Configuration.Flush();
+            services.Wallpaper.ShutdownAll();
+        };
 
         // 启动初始化：加载配置 + 首次枚举窗口（异步，不阻塞界面显示）
         _ = ViewModel.InitializeAsync();

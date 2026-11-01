@@ -29,4 +29,11 @@ public interface IWallpaperService
     /// 恢复渲染。
     /// </summary>
     void ResumeRendering();
+
+    /// <summary>
+    /// 销毁全部壁纸会话与宿主窗口（应用退出时调用，WP1-A 引入）。
+    /// 同步语义：返回时全部 WinEvent 钩子已卸载、全部宿主窗口已销毁（内部经宿主专用
+    /// 消息线程往返完成销毁，跨线程 DestroyWindow 非法）。
+    /// </summary>
+    void ShutdownAll();
 }

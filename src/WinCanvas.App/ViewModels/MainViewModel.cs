@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Controls;
 using WinCanvas.App.Services;
 using WinCanvas.Core.Interfaces;
 using WinCanvas.Core.Models;
+using WinCanvas.Wallpaper.Hosting;
 
 namespace WinCanvas.App.ViewModels;
 
@@ -69,9 +70,18 @@ public partial class MainViewModel : ObservableObject
         _services.WinTips.NumLockTipRequested += isLocked =>
             ShowInfo(InfoBarSeverity.Informational, isLocked ? "NumLock 已锁定" : "NumLock 已解锁");
 
-        // 壁纸：服务上报（pkg 复杂场景降级提示、加载错误等）→ InfoBar（工作线程触发，ShowInfo 内部封送）
+        // 壁纸：服务上报（pkg 复杂场景降级提示、加载错误、A2 自动透明提示等）→ InfoBar
+        //（工作线程触发，ShowInfo 内部封送）
         _services.Wallpaper.StatusReported += message =>
             ShowInfo(InfoBarSeverity.Informational, message);
+
+        // 壁纸：宿主挂接模式确定 / 变化（WP1-A）→ 壁纸状态文本可见「嵌入模式 / 跟随模式」
+        //（宿主 pump 线程或线程池触发，封送回 UI 线程再写可绑定属性）
+        _services.Wallpaper.SessionHostModeChanged += (_, mode) =>
+            _dispatcherQueue.TryEnqueue(() =>
+                WallpaperStatusText = mode == HostAttachMode.Embed
+                    ? "背景挂接：嵌入模式（宿主已嵌入目标窗口客户区）。"
+                    : "背景挂接：跟随模式（宿主位于目标窗口身后，目标需轻度透明）。");
 
         // FPS：每秒取样结果 → 悬浮指示文本
         _fpsMonitor.FpsChanged += (_, fps) =>

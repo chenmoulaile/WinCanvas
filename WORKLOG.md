@@ -92,9 +92,79 @@
 
 ---
 
-## 2. WP1 壁纸真实上屏（待开始）
+## 2. WP1 壁纸真实上屏
 
-> 预留区块：阶段 A 宿主窗口与双路径挂接 → 阶段 B 图片 DComp 上屏 → 阶段 C 视频帧服务器上屏 → 阶段 D 上屏收口与文档同步。完成后按「改动清单 / 关键决策与理由（含 ADR）/ 验证证据摘要 / DoD 自检」结构补录。
+### 2.A 阶段 A：宿主窗口与双路径挂接（2026-11-01）
+
+**状态**：完成。提交：`feat(WP1-A): 宿主窗口与双路径挂接`（分支 `feat/complete-w0-w5`）。先不渲染，宿主以纯色（深蓝 RGB(30,80,180)，`HostNativeMethods.HostPhaseAFillColor`）GDI 填充验证挂接正确性；阶段 B 换 DComp 渲染时窗口类、挂接与跟随逻辑保留复用。
+
+#### 改动清单
+
+| 文件 | 动作 | 说明 |
+| --- | --- | --- |
+| `src/WinCanvas.Wallpaper/Hosting/HostAttachMode.cs` | 新增 | 挂接模式枚举（Embed=A1 / Follow=A2）+ 降级规则文档 |
+| `src/WinCanvas.Wallpaper/Hosting/HostNativeMethods.cs` | 新增 | 宿主专用 P/Invoke（窗口类/创建/绘制/分层/Z 序/WinEvent/DWM/消息循环），注释规格对齐 Core 的 `NativeMethods.cs` |
+| `src/WinCanvas.Wallpaper/Hosting/WallpaperHostPump.cs` | 新增 | 宿主专用消息线程：全部宿主窗口共享一条 `GetMessageW` 循环线程，跨线程同步执行通道 `Execute`（`PostThreadMessageW(WM_APP_PUMP_TASK)` + GCHandle + 回执等待） |
+| `src/WinCanvas.Wallpaper/Hosting/WallpaperHostWindow.cs` | 新增 | 宿主窗口本体：窗口类注册、A1/A2 双路径创建、WinEvent 跟随、A1→A2 降级、目标销毁上报、`CountAliveHosts` 残留计数、A1/A2 矩形计算纯函数（供 WP4 测试） |
+| `src/WinCanvas.Wallpaper/Hosting/HostDiagnostics.cs` | 新增 | 挂接诊断日志（`%LOCALAPPDATA%\WinCanvas\logs\host-diag.log`），跟随类打点 200ms 节流 |
+| `src/WinCanvas.Wallpaper/WallpaperService.cs` | 修改 | `_hosts` 字典（`_gate` 保护）、`SessionHostModeChanged` 事件、构造可选注入 `IWindowControlService`、`UpdateCoreAsync` 会话替换后旧会话释放前创建/复用宿主、TargetLost 清理（复用 `_updateGates` 串行）、A2 自动透明（alpha=220）、`ShutdownAll`；`WallpaperSession` 增加 `Host` 属性与 Attach/Detach |
+| `src/WinCanvas.Core/Interfaces/IWallpaperService.cs` | 修改 | 增加 `ShutdownAll()`（销毁全部会话与宿主，应用退出时调用） |
+| `src/WinCanvas.App/Services/AppServices.cs` | 修改 | `new WallpaperService(WindowControl)`（注入窗口控制服务供 A2 自动透明） |
+| `src/WinCanvas.App/MainWindow.xaml.cs` | 修改 | `Closed` 处理追加 `services.Wallpaper.ShutdownAll()`（应用退出零残留） |
+| `src/WinCanvas.App/ViewModels/MainViewModel.cs` | 修改 | 订阅 `SessionHostModeChanged` → 壁纸状态文本显示「嵌入模式 / 跟随模式」 |
+| `src/WinCanvas.Wallpaper/WinCanvas.Wallpaper.csproj` | 修改 | `<InternalsVisibleTo Include="Wp1AHostDiag" />`（诊断命令访问 internal 宿主类型；WP4 测试项目届时同样加入） |
+| `tools/Wp1AHostDiag/`（csproj + Program.cs，不入 sln） | 新增 | 阶段 A 验收诊断命令：默认模式跑三类目标（记事本 A1 / 记事本 A2 / Edge A1）共 29 项断言；`probe` 模式分离跨进程挂接两种实现路径；`service` 模式走产品接线冒烟 |
+
+#### 关键决策与理由
+
+1. **宿主全部原生操作集中在专用消息线程（pump）**：跨线程 `DestroyWindow` 非法、`WINEVENT_OUTOFCONTEXT` 回调要求安装钩子的线程跑消息循环——两件事用同一条线程一并满足。全部宿主窗口共享一条 pump（每会话一线程会线程爆炸）；空闲时阻塞在 `GetMessageW` 上零 CPU 占用，`IsBackground` 进程退出自动回收。已知风险：若目标线程假死，跨进程窗口操作（如子窗口 `WM_PARENTNOTIFY` 同步送达父窗口）可能拖住 pump——`TryCreate` 以 15s 超时兜底防调用方挂死，pump 假死期间其余宿主操作排队（可接受，实测未复现）。
+2. **A2 Z 序钉位锚点偏离规格字面公式**：规格写 `SetWindowPos(host, GetWindow(target, GW_HWNDNEXT), …)`，但按 Win32 语义 `hWndInsertAfter` 是「宿主插到它后面」、`GW_HWNDNEXT` 取的是已位于目标下方的相邻窗口，该式会把宿主放到「目标下方第二格」，与规格自己声明的目标「宿主始终位于目标正下方」矛盾。按语义正确实现：锚点直接传目标自身（`SetWindowPos(host, target, …)`），诊断实测 `GetWindow(target, GW_HWNDNEXT)` 向下遍历可遇宿主 ✓。
+3. **A1 从「直接以跨进程窗口为父 CreateWindowExW(WS_CHILD)」改为两步挂接**：规格字面做法被 OS 拒绝——实测（probe 模式）`CreateWindowExW(WS_CHILD, parent=跨进程记事本)` 返回 NULL 且 `GetLastError=0`（不设错误码的策略性拒绝）；而「自建 WS_POPUP → `SetWindowLongPtr(GWL_STYLE)` 转正 WS_CHILD → `SetParent(目标)`」成功且 `GetAncestor(GA_PARENT)==target`。两步路径与规格最终形态语义一致（WS_CHILD 子窗口），实现保留「先改样式再 SetParent」的顺序并注释了探针依据。
+4. **TargetLost 清理转线程池执行（死锁规避）**：清理若在 pump 线程上等 `_updateGates`，而持闸门的 `UpdateCoreAsync` 正同步等 pump 往返，两端互等即死锁。因此 pump 线程上的 TargetLost 回调只投递 `Task.Run(CleanupSessionCoreAsync)`；清理与壁纸更新共用同一 hwnd 的 `_updateGates` 闸门串行，消除「更新刚建好宿主、清理又销毁」的交错。
+5. **降级检测比规格的「30 秒观察期」更保守**：焦点异常（宿主意外获得键盘焦点——宿主带 WS_EX_TRANSPARENT 永不该获得）在挂接全程监测（跨进程 SetParent 的输入队列问题若发生几乎都在初期显现，持续监测成本只是一个事件过滤分支）；另加「父子关系被外力破坏」（`GetAncestor(GA_PARENT) != 目标`，借 REORDER/SHOW/HIDE 低频事件校验）→ 同样降级 A2。A1 创建失败（UIPI 等）直接降级 A2，与规格一致。
+6. **跨进程挂接的 DPI 上下文约束（实测结论）**：跨进程 SetParent/CreateWindow(WS_CHILD) 要求父子两侧 DPI 感知上下文一致。WinUI 3 主程序是 PerMonitorV2，对 PMv2/System-aware 目标（记事本、浏览器等绝大多数应用）A1 可用；对 DPI-unaware 目标 A1 会被拒 → 自动降级 A2（A2 宿主矩形由 PMv2 进程以物理像素跟随，不受目标虚拟化影响）。此约束与降级闭环是产品在真实环境的主要行为分支。
+7. **A2 自动透明的 alpha 读取**：用 `GetLayeredWindowAttributes` 读目标当前 alpha（未分层 / 未设置过则视为 255），已有透明（<255）则尊重用户设置，仅 255 时自动 `SetTransparencyAsync(220)` 并经 `StatusReported` 提示——规格 A2.4 的语义。
+8. **诊断工具自设 PMv2**：DPI-unaware 进程 `GetWindowRect` 被虚拟化（本机 200% 缩放 ÷2），与 DWM 外接框（恒物理像素）不可比；工具设 PMv2 后与产品同上下文，测量口径一致。
+9. **实测修正两处文档化坐标语义**（写回代码注释）：① `GetAncestor(GA_PARENT)` 对顶层窗口返回桌面窗口（#32769）而非 NULL，「是否顶层」应判 `GA_ROOT == 自身`；② Win11/DWM 下子窗口 `GetWindowRect` 返回屏幕物理坐标（非旧文档「父客户区坐标」），位置比对须经 `ScreenToClient` 映射，宽高比对不受影响（产品逻辑只比宽高，不受此发现影响）。
+10. **A2 目标最小化时按 0 尺寸创建**：最小化目标的外接矩形是 (-32000) 幽灵坐标，按 0 尺寸隐藏创建，待 MINIMIZEEND/SHOW 事件定位显示。
+
+#### 验证证据摘要
+
+- **构建门禁**：`dotnet clean WinCanvas.sln -c Debug` → `dotnet build WinCanvas.sln -c Debug` = **0 个错误 / 26 个警告**（= WP0 基线 26，未新增）。
+- **测试**：`dotnet test WinCanvas.sln -c Debug --no-build` = **已通过! - 失败: 0，通过: 6，已跳过: 0，总计: 6**。
+- **诊断命令**（`dotnet run --project tools/Wp1AHostDiag -c Debug`，2026-11-01 实测，29/29 断言 PASS，摘要；诊断日志 `%LOCALAPPDATA%\WinCanvas\logs\host-diag.log` 同步留痕）：
+  - 记事本-A1嵌入：`mode = Embed`；`GetAncestor(host, GA_PARENT) == target`；宿主左上经 ScreenToClient 映射 = (0,0)、宽高 = 客户区 1934x1270；跟随三轮最大 **62ms**；目标关闭后 TargetLost **31ms**、`IsWindow(host)=False`；
+  - 记事本-A2跟随：`mode = Follow`；`GA_ROOT == host`（顶层）；宿主矩形 == DWM 外接框 (698,214,2636,1486)；宿主位于目标下方（目标下方第一格为系统 IME 窗口，向下遍历遇宿主）；跟随三轮最大 **63ms**；最小化 → 宿主隐藏、恢复 → 重现且矩形同步；关闭后清理 **16ms**；
+  - 浏览器(Edge)-A1嵌入：`mode = Embed`；父子关系 ✓；客户区 2880x1706 对齐 ✓；跟随 **0ms**；清理 **218ms**；
+  - 收尾：`WinCanvasWallpaperHost` 存活计数 = **0**（EnumWindows + EnumChildWindows 全域枚举）。
+  - 跟随耗时口径：程序化 SetWindowPos 改目标 → 2ms 步进轮询宿主矩形匹配，含 WinEvent 排队延迟，DoD ≤100ms 全部满足。
+- **服务级接线冒烟**（`service` 模式）：临时 PNG 经真实 `ImageWallpaperLoader` 解码 → `UpdateWallpaperAsync` → `SessionHostModeChanged = Embed`、宿主存活 1 → `ShutdownAll` → 存活 **0**。证明会话替换 / 宿主创建 / 模式上报 / 退出清理的产品路径真实工作。
+- **跨进程挂接探针**（`probe` 模式，决策 3/6 的事实依据）：
+  ```
+  ① 直接 CreateWindowExW(WS_CHILD, parent=target)：失败，GetLastError=0
+  ② POPUP→改WS_CHILD→SetParent：成功，GA_PARENT=0x1E0F0A（=target）
+  ③ POPUP→直接SetParent：成功，GA_PARENT=0x1E0F0A（=target）
+  ```
+- **宿主期间纯色上屏**：宿主 WM_PAINT/WM_ERASEBKGND 以深蓝纯色填充（人工可在真实会话中肉眼确认宿主覆盖目标自绘背景、既有子控件仍在其上）。
+
+#### 人工验证清单（自动化无法覆盖，需真实交互会话确认）
+
+- [ ] 记事本 A1 挂接后：宿主区域显示深蓝纯色（说明：记事本编辑区是子窗口控件、位于宿主上方，覆盖效果以「窗口非控件区域 / 控件间隙」为准），编辑文字、右键菜单、快捷键（Ctrl+S 等）全部正常；
+- [ ] Edge A1 挂接后：网页滚动、点击链接、输入框键入、右键菜单全部正常；
+- [ ] A2 模式下（用 `service` 场景或主程序对 DPI-unaware 目标挂背景）：手动把透明度滑块从 255 拉低，确认目标身后透出宿主纯色；确认 A2 自动透明提示出现；
+- [ ] 拖动标题栏 / 拖拽边缘缩放目标，壁纸画面无迟滞感（诊断测得 ≤100ms，人工感受核对）；
+- [ ] 多显示器间拖动目标（阶段 D 才处理跨屏 DPI 变化，本阶段预期 A2 宿主矩形仍按物理像素跟随、图片内容缩放待阶段 B/D）。
+
+#### DoD 自检（阶段 A）
+
+- [x] 对「记事本（自绘背景类）」与「浏览器（控件密集类 Edge）」以 A1 挂接后，宿主矩形与目标客户区一致（诊断打点：父子关系 / ScreenToClient(0,0) / 宽高一致，`host-diag.log` + 汇总表为证）
+- [x] 拖动、缩放目标窗口，宿主 100ms 内跟随（诊断三轮打点：62ms / 63ms / 0ms，程序化移动+轮询口径）
+- [x] 宿主存在期间目标的点击、键盘输入、菜单操作正常——**程序化等价探针已过**（SendMessageTimeout(WM_NULL) 三场景应答正常，目标消息循环无阻塞）；真实点击 / 键盘 / 菜单属人工验证项，清单见上节，待真实会话确认
+- [x] 关闭目标窗口后 1s 内宿主销毁且会话 Dispose（诊断：TargetLost 16~218ms，宿主句柄失效，全域残留计数 = 0）
+- [x] 应用退出时全部宿主销毁（`ShutdownAll` 已接线 MainWindow.Closed；服务冒烟 ShutdownAll 清零 = 0；宿主 pump 为 IsBackground 线程进程退出自动回收兜底）
+- [x] 阶段提交 `feat(WP1-A): 宿主窗口与双路径挂接`
+
+---
 
 ## 3. WP2 NumLock 键盘钩子与提示链路端到端（待开始）
 
