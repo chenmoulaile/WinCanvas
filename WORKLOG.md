@@ -1,8 +1,25 @@
 ﻿# WinCanvas 开发工作日志（WORKLOG）
 
-> 本文件是「WinCanvas 补全与质量提升」总提示词（`.zcode/spec/spec.md`，已 gitignore）要求的常驻工作日志：每个工作包（WP0~WP5）完成后追加一节，记录「改动清单 / 关键决策与理由 / 验证证据摘要」。全部 WP 完成后由 WP5 终稿整理为顶部总览表。
+> 本文件是「WinCanvas 补全与质量提升」总提示词（`.zcode/spec/spec.md`，已 gitignore）要求的常驻工作日志：每个工作包（WP0~WP5）完成后追加一节，记录「改动清单 / 关键决策与理由 / 验证证据摘要」。
 >
 > **warning 基线口径**：`dotnet clean WinCanvas.sln -c Debug` 后 `dotnet build WinCanvas.sln -c Debug`，取输出末尾 MSBuild 的 sln 汇总「N 个警告」数。增量构建下未重建的项目不出警告，数字不可比，不得以增量构建数字充当门禁证据。
+
+## 总览表（WP0~WP5 终稿汇总）
+
+| 工作包 | 状态 | 提交 | 一句话产出 |
+| --- | --- | --- | --- |
+| WP0 环境基线与测试骨架 | ✅ 完成 | `9eba4ee` | 基线记录（SDK/子模块/构建 0e26w）+ xUnit 骨架 + README 笔误修复 |
+| WP1-A 宿主窗口与双路径挂接 | ✅ 完成 | `2fea35c` | A1 跨进程嵌入 / A2 顶层跟随 + 自动降级 + pump 线程模型 |
+| WP1-B 图片 DComp 上屏 | ✅ 完成 | `eff642d` | DComp 树 + GDI GetDC 贴图，四象限采样验证，静态图 CPU≈0% |
+| WP1-C 视频帧服务器上屏 | ✅ 完成 | `f87010b` | ADR：主路径受阻 → 备选组合呈现（GetSurface + SpriteVisual），零拷贝零逐帧 |
+| （WP1-C 过程清理） | ✅ 完成 | `07c4492` | 移除误提交的临时探针文件（结论保留于 WORKLOG） |
+| WP1-D 上屏收口与文档同步 | ✅ 完成 | `fbcf28b` | 预览旁路化 / WM_DPICHANGED / 跨屏重缩放 / 错误三要素 / 文档同步 |
+| WP2 NumLock 钩子与 WinTips 部署 | ✅ 完成 | `9c49886` | LL 钩子专用线程 + 去抖 + WinTips.exe 外挂构建部署，E2E 11/11 |
+| WP3 启动自动恢复管线 | ✅ 完成 | `4c68ff9` | 200ms 排队 / 并发 2 / 幂等判重，重启 2s 内恢复（实测 709~1307ms） |
+| WP4 自动化测试工程 | ✅ 完成 | `494f9eb` | 84 用例（用例表全覆盖），clean 构建 0e26w |
+| WP5 质量打磨与文档收口 | ✅ 完成 | `feat(WP5)` 本提交（WORKLOG 随该提交入库，提交内无法预写自身哈希，自引用限制；`git log --oneline feat/complete-w0-w5` 即见） | GIF 多帧播放 / webp / WallpaperFormats 单一来源 / UIPI 引导 / 文档全面同步 / 108 用例 |
+
+**warning 门禁基线 = 26**（WP0 确立，WP0~WP5 各轮 clean 全量构建均持平，零新增）。
 
 ---
 
@@ -585,6 +602,119 @@
 
 **DoD 自检**：上表每行用例均有对应测试且通过 ✅；`dotnet test` 全绿 ✅；两测试项目均入 sln ✅；clean 全量构建 0 error 且 warning = 基线 26 ✅；WORKLOG 记录测试总数（84）✅；README 无自动化测试表述已更新为真实说明 ✅。
 
-## 6. WP5 质量打磨与文档收口（待开始）
+## 6. WP5 质量打磨与文档收口（2026-11-01）
 
-> 预留区块：GIF / webp / UIPI 引导 / 文档三件套同步 / WORKLOG 终稿整理。完成后按同一结构补录。
+**状态**：完成。提交：`feat(WP5): 质量打磨与文档收口`（分支 `feat/complete-w0-w5`）。
+
+### 6.1 改动清单
+
+| 文件 | 动作 | 说明 |
+| --- | --- | --- |
+| `src/WinCanvas.Wallpaper/WallpaperFormats.cs` | 新增 | 扩展名与类型判定的**全仓库单一事实来源**：Image/Video/Pkg 三组口径 + `IsImage/IsVideo/IsPkg/DetectKind`；图片组含 `.webp`（WP5 缺陷修复），视频组为原两侧字面列表的并集（补齐 `.m4v`/`.avi` 互相缺失） |
+| `src/WinCanvas.Wallpaper/Models/WallpaperAnimationFrame.cs` | 新增 | 动画单帧 record（Bgra8 SoftwareBitmap + TimeSpan 延迟），`WallpaperSource.ImageFrames` 的元素类型 |
+| `src/WinCanvas.Wallpaper/Models/WallpaperSource.cs` | 修改 | 新增 `ImageFrames`（多帧动画集合；首帧与 `ImageFrame` 同实例）；Dispose 按集合路径统一释放全部帧（首帧只释放一遍，防双重 Dispose） |
+| `src/WinCanvas.Wallpaper/Loaders/ImageWallpaperLoader.cs` | 修改 | ① `SupportedExtensions` 改为 `WallpaperFormats.ImageExtensions` 别名（单一来源，API 兼容保留）；② GIF 多帧路径：`image.Frames.CloneFrame(i)` 逐帧解码 → 统一比例 Lanczos 缩放 → GifMetadata.FrameDelay（1/100 秒 → 毫秒，0/缺失兜底 100ms）→ `ImageFrames`；帧数受 256MB 像素预算 + 240 帧上限截断；静态路径行为不变 |
+| `src/WinCanvas.Wallpaper/Loaders/VideoWallpaperLoader.cs` | 修改 | `SupportedExtensions` / `IsSupported` 改引用 `WallpaperFormats`（别名保留） |
+| `src/WinCanvas.Wallpaper/WallpaperService.cs` | 修改 | ① `PrepareSource` 分派改走 `WallpaperFormats`，不支持的类型报错文案列出真实口径；② `WallpaperSession` 新增 `RenderHostFrame` 回调与动画推进：`OnFrameTick` 中多帧源按帧延迟到期推进索引（起表首帧不重贴），`BitmapSnapshot.CopyFrom` 同步复制新帧像素（`_tickGate` 锁内，与 Dispose 互斥）后交宿主 `RenderImage` 重贴 Commit；③ 宿主挂接失败文案补「管理员重启」引导 |
+| `src/WinCanvas.Core/Services/ProcessElevation.cs` | 新增 | 提权检测（BCL `WindowsPrincipal.IsInRole(Administrator)`，静态缓存）+ `DescribeFailure`：Win32 错误 5 → 「目标窗口以更高权限运行…请以管理员身份重启 WinCanvas 后重试」三要素引导，其余异常透传 |
+| `src/WinCanvas.App/ViewModels/WindowItemViewModel.cs` | 修改 | 恢复 / 置顶 / 透明 / 穿透 / 圆角五个 catch 统一经 `ProcessElevation.DescribeFailure` 翻译 |
+| `src/WinCanvas.App/ViewModels/MainViewModel.cs` | 修改 | ① 删除本地 `ImageExtensions/VideoExtensions` 字面列表，`DetectBackgroundType` 改为 `WallpaperFormats.DetectKind` 的枚举映射；② 恢复管线 catch 走提权引导；③ 新增 `ElevationStatusText`（设置区权限状态文本） |
+| `src/WinCanvas.App/Services/FilePickerService.cs` | 修改 | 选择器过滤器由 `WallpaperFormats` 三组口径拼装（消灭最后一份字面列表） |
+| `src/WinCanvas.App/MainWindow.xaml` | 修改 | 设置区新增「当前权限」状态文本（x:Bind `ElevationStatusText`） |
+| `src/WinCanvas.Core/Models/BackgroundType.cs` | 修改 | 修正过时注释（pkg「尚未实现」→ 实际能力描述；文档-代码一致性硬约束） |
+| `src/WinCanvas.Wallpaper/WinCanvas.Wallpaper.csproj` | 修改 | `InternalsVisibleTo` 增加 `Wp5FormatDiag`（行为验收命令访问 internal 宿主类型） |
+| `tests/WinCanvas.Core.Tests/ProcessElevationTests.cs` | 新增 | 4 用例：错误 5 → 引导文案（含三要素结构与裸异常不再直出）、非 5 错误透传不误导、其他异常类型透传、`IsElevated` 只读稳定 |
+| `tests/WinCanvas.Wallpaper.Tests/WallpaperFormatsAndAnimatedImageTests.cs` | 新增 | 20 用例：扩展名口径镜像表一致（webp 必在、m4v/avi 收敛、加载器别名一致、交叉反例）、`DetectKind` 七分支、合成 3 帧动画 GIF 往返（帧数 / 首帧别名 / 帧延迟 20·50·100ms / 三帧像素逐帧核对）、单帧 GIF 不进动画路径、静态 WebP 解码 |
+| `tools/Wp5FormatDiag/`（csproj + Program.cs，不入 sln） | 新增 | WP5 行为验收命令（gif / webp / elev 三模式，详见验证证据） |
+| `README.md` / `docs/architecture.md` / `docs/api.md` / `docs/risk.md` | 同步 | 见 6.4 文档同步清单 |
+
+### 6.2 关键决策与理由
+
+1. **扩展名单一来源的落点**：`WallpaperFormats` 放在 `WinCanvas.Wallpaper` 根命名空间（被四类消费方引用的最低层公共归属；App 已引用 Wallpaper 项目，无依赖方向问题）。两侧加载器的 `SupportedExtensions` 公共字段**保留为别名**而非删除——它们是既有公共 API（PkgWallpaperLoader 内部等消费方在用），删除即破坏兼容；别名指向单一来源后，「再复制一份字面列表」的漂移面被压缩到零，xUnit 口径镜像用例进一步钉死。
+2. **视频组取并集（补 `.m4v`/`.avi`）而非删减**：图片组的 .webp 缺陷方向是「选择器能选、加载器拒收」；视频组实测存在同构缺陷（选择器有 `.avi` 无 `.m4v`，加载器反之）。两个方向都属「同一资源两侧口径不一致」。取并集后 `.avi`/`.m4v` 容器均由 Media Foundation 解封装（与 `.mkv`/`.webm` 的编解码能力约束同范畴），比「从选择器删 `.avi`」对用户更少意外；若目标机器缺对应解码器，行为与既有 mkv/webm 一致（MF 异步报错 → 黑画面 + 既有加载提示链路），风险等级相同。
+3. **GIF 动画解码信任 ImageSharp 的合成语义**：`Frames.CloneFrame(i)` 取出的是解码期已按 disposal 规则合成好的整幅画面（合成测试以三帧异色 GIF 逐帧像素核对钉住，见 6.3），渲染侧无需再做帧叠加。帧延迟换算 1/100 秒 = 10ms/单位，实测钉住（首版测试把 2 单位误算成 200ms，往返实测纠正为 20ms——「1/100 秒」的字面语义即 10ms，已由往返用例固化）。
+4. **动画内存预算 256MB / 240 帧双重截断**：GIF 帧解码为全画布位图，超长高分辨率 GIF 理论上可推高到 GB 级内存。按「缩放后单帧字节 × 帧数」设预算、帧数设硬上限，正常 GIF（数百 KB~数 MB）完全不受影响；截断行为在 README「已知限制」如实声明。
+5. **帧推进复用既有渲染循环与会话锁，零新线程零新锁**：`FrameTick`（60/15fps）高频到达时按 `_nextFrameDueMs` 门槛过滤，只有帧展示期满才重贴——无帧到期时空转返回，暂停态渲染循环不出帧 → 动画自然定格（与视频联动同一状态机，规格「暂停态停止推进」）。像素复制与上屏回调都在会话 `_tickGate` 锁内串行，Dispose 不可能与在途帧推进并发释放资源——**既有锁语义只扩展未绕过**（未新增任何锁体系）。
+6. **首帧双路径语义**：`ImageFrame` = `ImageFrames[0].Frame` 同实例。既有消费方（服务层「ImageFrame 非空即渲染」判定、预览旁路 ImageFrameReady、pkg 封面路径）零改动即获得正确行为；首帧由 UpdateCoreAsync 的静态路径一次性上屏，会话动画推进只负责第 2 帧起。预览保持「只显示首帧」（规格明示允许，README 已知限制如实标注）。
+7. **提权检测用 BCL `WindowsPrincipal.IsInRole(Administrator)`**：`IsUserAnAdmin` 已被微软标注不推荐用于新代码；令牌完整性级别读法更精确但需两个 P/Invoke，且「High 完整性但非管理员」仍跨不过 UIPI。BCL 一行纯托管覆盖产品全部真实场景，结果进程生命周期内不变 → 静态缓存，UI 线程可安全访问。检测失败（极端安全上下文）按「未提升」保守处理——宁可多引导不误报已提权。
+8. **引导文案的翻译点收敛在 `DescribeFailure` 单处**：五个 catch（恢复 / 置顶 / 透明 / 穿透 / 圆角）+ 恢复管线全部经它翻译，不散落字面判断；错误 5 之外的异常严格透传（不吞不捏造，非 UIPI 错误绝不误导用户去提权）。宿主挂接失败的既有文案（WP1 已含错误 5 释义）补齐「管理员重启」动作项。
+9. **webp 行为验收以「屏上像素 == 文件解码像素」为忠实口径**：探针发现 ImageSharp 2.1 的 WebP **编码器**对构造颜色存在通道序出入（构造 (B:0,G:160,R:255) 的橙色，落盘文件解码为 (R:1,G:161,B:255)）——属编码器行为，与加载链路无关；加载 → 上屏链路本身逐像素忠实（屏上实测 = 解码实测，见 6.3）。探针据此改为以本地解码结果为期望色，避免把编码器侧偏差误判为加载缺陷。
+10. **探针发现的测试期望算错（自纠错记录）**：GIF 帧延迟往返用例首版把 FrameDelay=2 期望成 200ms，实测 20ms——「1/100 秒 = 10ms」的换算器实现是对的、测试期望错了，修正期望而非实现（决策 3 同源）。
+
+### 6.3 验证证据摘要（命令均实际执行，输出为原文摘录）
+
+- **门禁构建**（clean 全量，口径 = §0.2）：`dotnet clean WinCanvas.sln -c Debug` → `dotnet build WinCanvas.sln -c Debug` = **0 个错误 / 26 个警告**（= WP0 基线 26，WP5 零新增警告；`InternalsVisibleTo` 增行与新类型均无警告）。
+- **测试门禁**：`dotnet test WinCanvas.sln -c Debug --no-build` = **108/108 通过**（Wallpaper.Tests 68 + Core.Tests 40，WP4 基线 84 → 新增 24）。clean 后首轮出现一次「测试运行已中止」（暂态，无失败用例输出），立即重跑两轮均 108/108 全绿。
+- **GIF 播放行为验证**（`dotnet run --project tools/Wp5FormatDiag --no-build -c Debug -- gif`，真实 WallpaperService + 真实宿主挂接 + 屏幕 DC 采样）：
+
+  ```
+  == WP5 GIF 动画行为验证 ==
+  [INFO] 应用动画 GIF：完成，上报 0 条
+  [PASS?] 播放态 2s 采样颜色种类 = 2（(0,0,255)/(255,0,0)）
+  [PASS] GIF 背景在目标窗口内连续播放（帧推进可见）
+  [INFO] 暂停态（= 静态图口径）CPU 占用 = 0.00%（1.2s 窗）
+  [PASS] 暂停态定格（1.2s 采样颜色种类 = 1，(0,0,255)）
+  [PASS] 恢复后继续播放
+  [PASS] 播放态 CPU 占用 = 3.12%（与静态图同量级，阈值 <10%）
+  [PASS] ShutdownAll 后宿主残留 = 0
+  == GIF 验证全部通过 ==
+  ```
+
+  即规格 DoD「GIF 背景在目标窗口内连续播放；暂停时定格；CPU/GPU 占用与静态图同量级（打点记录）」：播放 3.12% vs 暂停（静态口径）0.00% 同轮对照（采样线程自身开销含在播放态数值内）。
+- **webp 加载行为验证**（`-- webp`）：
+
+  ```
+  == WP5 WebP 加载行为验证 ==
+  [INFO] IsSupported(webp) = True，DetectKind = Image
+  [INFO] 应用 webp：完成，上报 0 条
+  [INFO] 本地解码中心像素 = R:1 G:161 B:255 A:255（作为屏上期望色）
+  [INFO] 屏幕中心实测 = R:1 G:161 B:255（期望 R:1 G:161 B:255）
+  [PASS] webp 背景成功加载并上屏（屏上颜色匹配）
+  [PASS] ShutdownAll 后宿主残留 = 0
+  == WebP 验证全部通过 ==
+  ```
+
+  选择器口径（`FilePickerService.SupportedExtensions` 经 WallpaperFormats 拼装）必然包含 `.webp`，「选择 webp → 运行时报不支持」的原始缺陷闭环。
+- **权限引导行为验证**（`-- elev`）：
+
+  ```
+  == WP5 权限引导行为验证 ==
+  [INFO] ProcessElevation.IsElevated = False（PowerShell 交叉核对见 WORKLOG）
+  [INFO] 错误 5 文案：切换窗口「记事本」置顶失败：目标窗口以更高权限运行（Win32 错误 5 = 拒绝访问，系统 UIPI 机制拦截低权限进程操作高权限窗口）。请以管理员身份重启 WinCanvas 后重试。
+  [PASS] 错误 5 → 提权引导文案映射正确
+  [PASS] 非 5 错误保持原语义透传（不误导）
+  == 权限引导验证全部通过 ==
+  ```
+
+  `IsElevated = False` 与 PowerShell 交叉核对一致（`[Security.Principal.WindowsPrincipal]…IsInRole(Administrator)` 返回 `False`，本会话 shell 非提升）。
+- **真实「管理员记事本为目标」场景——未取得（如实标注）**：该 DoD 项需要把一个窗口运行在管理员令牌下，而本会话 shell 非提升，构造提权目标必须经交互式 UAC 弹窗确认（无人值守环境无法完成，且 WP2 期间已观察到用户在本机实时操作，不宜再弹 UAC 打扰桌面）。已验证的等价证据链：① 错误码 → 引导文案的映射（elev 模式 + 4 个 xUnit 用例）；② 映射点覆盖全部真实失败路径（五个 catch + 恢复管线）；③ UIPI 错误 5 的真实发生路径由 WP1 阶段 A 的跨进程 SetParent 探针实证（GetLastError=5 → 自动降级 A2）。缺口仅在「真实提权目标的端到端截图/日志」，留待人工在有 UAC 交互的会话中确认（操作路径：以管理员运行记事本 → 非管理员 WinCanvas 对其置顶 → InfoBar 应出现引导文案）。
+
+### 6.4 文档同步与一致性自查清单（逐条对照，README / docs 无失真条目）
+
+| # | 条目 | 自查结果 |
+| --- | --- | --- |
+| 1 | README「GIF 动图只取第一帧」 | **删除**（能力已实现），改写为全帧播放 + 截断 / 动画 WebP 限制条目；全仓库 grep「只取第一帧/取第一帧」零残留 |
+| 2 | README 图片层扩展名 `.jpg/.jpeg/.png/.bmp/.gif` | 改为 WallpaperFormats 口径（含 .webp） |
+| 3 | README 视频层扩展名 | 改为收敛后口径（.mp4/.m4v/.mov/.webm/.wmv/.mkv/.avi） |
+| 4 | README「使用说明」壁纸 / 权限条目 | GIF 连续播放 / 暂停定格、webp 支持、错误 5 引导文案、设置区权限显示逐条与代码行为核对 |
+| 5 | README「验证手段」 | 测试总数 84 → 108，新增用例类别描述 |
+| 6 | docs/architecture.md | 架构图加 WallpaperFormats 节点；§3 加载策略重写（单一来源 + GIF 多帧）；Hosting 小节新增「GIF 动画上屏（WP5）」；§6 MVVM 补 UIPI 引导；§8 测试 108 例 + 探针清单 |
+| 7 | docs/api.md | §3.8 加载器改口径描述；§3.9 `WallpaperSource.ImageFrames` + `WallpaperAnimationFrame`；新增 §3.10 `WallpaperFormats`、§3.11 `ProcessElevation` |
+| 8 | docs/risk.md | §2 UIPI 专项处理移入已覆盖；§3 补 GIF 帧推进锁纪律 + 108 用例；§4 补权限引导覆盖层次；§5 补动画 GIF 内存预算；§6 矩阵新增「扩展名口径」「动画渲染」两行 + 功能完整性行更新 |
+| 9 | 代码内注释失真 | `BackgroundType.Pkg`「尚未实现」过时注释修正为实际能力（pkg 已实现并上屏） |
+| 10 | 残留扫描 | `grep -rn "TODO\|FIXME\|待补充\|XXX"`（src/tests/docs/README/tools/Wp5FormatDiag）仅命中两处 `\uXXXX`（JSON 转义说明文字，非遗留标记）；字面扩展名列表仅剩 `WallpaperFormats` 一处定义 |
+
+### 6.5 DoD 自检
+
+- [x] GIF 播放 / webp 加载 / 权限引导三项行为验证通过并记录（tools/Wp5FormatDiag 三模式原文输出 + 24 个新 xUnit 用例；「管理员记事本」端到端场景的缺口如实标注于 6.3）
+- [x] README 与 docs 无「已实现能力仍写在已知限制中」的失真条目（6.4 逐条对照表）
+- [x] 扩展名列表收敛为 `WallpaperFormats` 单一事实来源（grep 验证全仓库仅一处定义，四类消费方全部引用；口径一致性由 xUnit 钉住）
+- [x] WORKLOG 终稿整理：顶部总览表（WP×状态×提交哈希）+ 各 WP 区块完整
+- [x] 提交 `feat(WP5): 质量打磨与文档收口`
+
+### 6.6 终验自查（总提示词「终验与交付报告」范围内、本 WP 可执行部分）
+
+- [x] 仓库内无 `TODO` / `FIXME` / `待补充` / `XXX` 遗留（grep 验证，见 6.4 #10）
+- [x] `dotnet build WinCanvas.sln -c Debug`（clean 全量）0 error、warning = 基线 26；`dotnet test` 108/108 全绿
+- [x] README / docs / WORKLOG 与代码行为一致（6.4 自查表）
+- [ ] `git merge` 回 `main` 前后各跑一次构建/测试 + 手工冒烟场景走查 —— 归属「终验与交付报告」环节（merge 回 main 是全部 WP 之后的独立动作，不在本 WP 的任务与提交范围内），本 WP 已把分支上的构建/测试门禁跑绿，merge 后复跑与手工冒烟（记事本挂图 / 浏览器挂视频 / pkg 降级 / NumLock / 重启恢复 / 全屏暂停）留待终验执行者按清单执行。

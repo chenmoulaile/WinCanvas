@@ -18,12 +18,14 @@
 
 ### 壁纸背景（src/WinCanvas.Wallpaper）
 
-按扩展名分派的三层加载策略（`WallpaperService`）：
+按扩展名分派的三层加载策略（`WallpaperService`；扩展名口径统一由
+[`WallpaperFormats`](docs/api.md) 单一来源定义，图片 `.jpg/.jpeg/.png/.bmp/.gif/.webp`、
+视频 `.mp4/.m4v/.mov/.webm/.wmv/.mkv/.avi`、打包资源 `.pkg`）：
 
-1. **图片层**：`.jpg/.jpeg/.png/.bmp/.gif`，ImageSharp 解码后用 Lanczos 一次性缩放到承载窗口所在显示器分辨率（只缩小不放大），转 Bgra8 `SoftwareBitmap`；GIF 当前取第一帧静态呈现。
-2. **视频层**：`.mp4/.m4v/.mov/.webm/.wmv/.mkv`，`Windows.Media.Playback.MediaPlayer`（Media Foundation 硬件解码），静音循环播放。
+1. **图片层**：ImageSharp 解码后用 Lanczos 一次性缩放到承载窗口所在显示器分辨率（只缩小不放大），转 Bgra8 `SoftwareBitmap`。**GIF 动画解码全部帧并按帧延迟连续播放**（宿主按帧推进上屏，全屏 / 用户暂停时定格；帧解码受内存预算上限 256MB 约束，超长 GIF 截断为前若干帧循环）；静态 webp 支持（动画 webp 为 ImageSharp 2.1 解码能力范围外，加载失败按既有错误提示）。
+2. **视频层**：`Windows.Media.Playback.MediaPlayer`（Media Foundation 硬件解码），静音循环播放。
 3. **pkg 层（Wallpaper Engine）**：`.pkg`，经 git 子模块 [repkg](https://github.com/notscuffed/repkg)（v0.4.0-alpha，源码项目引用）解包到 `%LOCALAPPDATA%/WinCanvas/wallpaper-cache/<文件名-hash>/`，`.tex` 纹理解码为 PNG、内嵌视频纹理还原为 mp4；纯视频场景走视频层、纯图场景走图片层；**含 SceneScript 动态脚本场景（存在 .lua 或 scene.json 引用 script 字段）当前不支持动态渲染，降级为仅显示封面图并给出提示**。
-4. **动态帧率**：三档状态机（`DynamicFrameRateController`）—— 窗口激活 60fps / 非激活 15fps / 检测到全屏前台窗口或用户暂停时完全暂停；全屏检测每 250ms 节流执行；暂停时同步暂停视频解码。
+4. **动态帧率**：三档状态机（`DynamicFrameRateController`）—— 窗口激活 60fps / 非激活 15fps / 检测到全屏前台窗口或用户暂停时完全暂停；全屏检测每 250ms 节流执行；暂停时同步暂停视频解码、GIF 定格。
 
 ### 背景上屏（宿主窗口，src/WinCanvas.Wallpaper/Hosting）
 
@@ -98,11 +100,13 @@ dotnet build WinCanvas.sln -c Debug
 # 产物位于 src/WinCanvas.App/bin/x64/Debug/net8.0-windows10.0.19041.0/win-x64/WinCanvas.App.exe
 ```
 
-> 验证手段：`dotnet build WinCanvas.sln`（0 error 为过）+ `dotnet test`（xUnit，两个测试项目共 84 个用例，见 `tests/`）：
+> 验证手段：`dotnet build WinCanvas.sln`（0 error 为过）+ `dotnet test`（xUnit，两个测试项目共 108 个用例，见 `tests/`）：
 > - `tests/WinCanvas.Core.Tests`：配置持久化（防抖合并 / 原子写 / 无 BOM）、窗口档案键语义、
->   `WindowControlService` 失败语义（无效句柄抛 `Win32Exception`）与真实窗口行为冒烟、NumLock 去抖纯逻辑；
+>   `WindowControlService` 失败语义（无效句柄抛 `Win32Exception`）与真实窗口行为冒烟、NumLock 去抖纯逻辑、
+>   UIPI 错误 5 的提权引导文案映射（WP5）；
 > - `tests/WinCanvas.Wallpaper.Tests`：动态帧率状态机真值表、pkg 加载器纯逻辑（路径安全 / 场景判定 / 封面优先级）、
->   宿主挂接矩形与 DPI 换算纯函数。
+>   宿主挂接矩形与 DPI 换算纯函数、扩展名单一来源口径（`WallpaperFormats`，WP5）、
+>   合成动画 GIF 的多帧解码与帧延迟往返、静态 WebP 解码（WP5）。
 >   需要真实桌面会话的用例打 `[Trait("Category", "RequiresWindowsSession")]`，无头环境用
 >   `dotnet test --filter "Category!=RequiresWindowsSession"` 排除（不判失败）。
 
@@ -113,17 +117,18 @@ dotnet build WinCanvas.sln -c Debug
    - **置顶**开关、**透明度**滑块（0~255）、**鼠标穿透**开关、**圆角**（无 / 大圆角 / 小圆角）；
    - 所有改动立即应用到目标窗口并实时写入配置；**完全退出并重启应用后，这些设置连同背景自动恢复**
      （见「状态重启自动恢复」一节；重启后按「进程名|类名」组合键重新定位窗口，窗口句柄变化不影响恢复）。
-3. **背景壁纸**：点「选择背景文件」挑选图片 / 视频 / `.pkg` 文件，资源在后台线程加载，进度条与状态提示实时显示；画面直接呈现在目标窗口内部（嵌入 / 跟随双模式自动选择，见「背景上屏」一节），窗口移动 / 缩放实时跟随，全屏前台窗口出现时视频自动暂停。
+3. **背景壁纸**：点「选择背景文件」挑选图片 / 视频 / `.pkg` 文件（GIF 动画按帧延迟连续播放，webp 静态图支持），资源在后台线程加载，进度条与状态提示实时显示；画面直接呈现在目标窗口内部（嵌入 / 跟随双模式自动选择，见「背景上屏」一节），窗口移动 / 缩放实时跟随，全屏前台窗口出现时视频自动暂停、GIF 定格。
 4. **设置区**：「启动时自动恢复窗口状态」开关控制启动 / 刷新时的档案恢复管线（默认开启）；「WinTips 提示」开关控制 NumLock 浮窗提示（默认关闭；开启即安装 LL 键盘钩子，按下 NumLock 后 2 秒内弹出 WinTips 浮窗，未部署 WinTips.exe 时在主界面 InfoBar 回退提示；关闭即卸钩，按键零反应）；「FPS 性能监控悬浮显示」开关在界面右上角显示渲染帧率。
-5. **权限说明（UIPI）**：目标窗口以更高权限（如管理员）运行时，Windows 的 UIPI 机制会拒绝本程序的跨进程操作（置顶 / 透明 / 穿透 / 背景挂接），错误会以 InfoBar 提示；此时请以同等级或更高权限重启 WinCanvas。背景挂接在嵌入被拒时自动降级为跟随模式，无需手动干预。
+5. **权限说明（UIPI）**：目标窗口以更高权限（如管理员）运行时，Windows 的 UIPI 机制会拒绝本程序的跨进程操作（置顶 / 透明 / 穿透 / 背景挂接）。相关操作失败（Win32 错误 5 = 拒绝访问）时 InfoBar 会给出明确引导：「目标窗口以更高权限运行，请以管理员身份重启 WinCanvas 后重试」；设置区实时显示本程序的当前权限状态（管理员 / 标准）。背景挂接在嵌入被拒时自动降级为跟随模式，无需手动干预。
 
 ## 已知限制
 
 - **SceneScript 动态场景暂不支持**：Wallpaper Engine 中包含 `.lua` 脚本或 scene.json 引用 script 字段的动态场景不做动态渲染，仅降级显示封面图（`PkgWallpaperLoader.DetectComplexScene`）。
-- **GIF 动图只取第一帧**，不播放动画。
+- **超长 GIF 截断**：动画 GIF 解码受内存预算上限（约 256MB 缩放后像素）与 240 帧上限约束，超过者只保留前若干帧循环播放（正常 GIF 不受影响）；**动画 WebP** 在 ImageSharp 2.1 解码能力范围外，加载失败按既有错误提示（静态 WebP 正常）。
+- **GIF / 图片的应用内预览只显示首帧**：主输出 = 目标窗口内的宿主画面，主窗口预览区是图片快照旁路（GIF 只显示首帧）。
 - **Wallpaper Engine 私有格式兼容性**：repkg 为 v0.4.0-alpha，不保证覆盖所有 WE 版本的 pkg / tex 变体；解析失败时该包降级或跳过。
-- **跨进程窗口操作受 UIPI 限制**：对以管理员权限运行的窗口执行置顶 / 透明 / 穿透操作，非管理员身份的本程序会失败（错误以 InfoBar 提示呈现）；本程序未做提权。背景挂接受同样限制，但嵌入被拒时自动降级跟随模式。
-- **视频的应用内预览为空**：视频走组合呈现（主输出 = 目标窗口内的宿主），主窗口预览区的 MediaPlayerElement 不再收到画面；图片预览不受影响。
+- **跨进程窗口操作受 UIPI 限制**：对以管理员权限运行的窗口执行置顶 / 透明 / 穿透操作，非管理员身份的本程序会失败——错误 5 会触发专项引导（「请以管理员身份重启 WinCanvas 后重试」，设置区可见当前权限状态）；本程序未做自动提权。背景挂接受同样限制，但嵌入被拒时自动降级跟随模式。
+- **视频的应用内预览为空**：视频走组合呈现（主输出 = 目标窗口内的宿主），主窗口预览区的 MediaPlayerElement 不再收到画面；图片预览不受影响（GIF 预览为首帧静态）。
 - **置顶一致性**：界面开关用幂等 Set 语义 + 实际状态回读；并发从界面与外部同时切换同一窗口的置顶状态时，结果以实际返回状态为准，界面可能与请求值不一致（已有不一致提示）。
 - **恢复按组合键匹配、同键共享档案**：启动恢复按「进程名|类名」组合键重新定位窗口；同一进程 + 同一类名的多个窗口（如多个 Chrome 窗口）共享同一份档案，恢复管线会对其中**每个**已枚举到的窗口应用同一档案值（这是档案键设计的既有取舍，见 `WindowInfo.Key`）。恢复只在启动与手动刷新时执行，运行期间本程序不监视外部对窗口属性的改动。
 - **NumLock 提示依赖系统注入语义**：NumLock 提示由低级键盘钩子驱动，远程桌面会话或部分键盘驱动宏对 NumLock 的特殊处理可能不产生标准键事件，此时提示不出现（物理按键与 SendInput 注入均已验证可用）。

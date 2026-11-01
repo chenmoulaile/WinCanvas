@@ -14,6 +14,6 @@ public enum BackgroundType
     /// <summary>视频背景。</summary>
     Video = 2,
 
-    /// <summary>pkg 打包资源背景（本程序自定义的打包格式，尚未实现）。</summary>
+    /// <summary>pkg 打包资源背景（Wallpaper Engine 格式，经 repkg 解包渲染；复杂场景降级为封面图）。</summary>
     Pkg = 3,
 }

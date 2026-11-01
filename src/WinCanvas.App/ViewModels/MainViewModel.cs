@@ -10,7 +10,10 @@ using Microsoft.UI.Xaml.Controls;
 using WinCanvas.App.Services;
 using WinCanvas.Core.Interfaces;
 using WinCanvas.Core.Models;
+using WinCanvas.Core.Services;
+using WinCanvas.Wallpaper;
 using WinCanvas.Wallpaper.Hosting;
+using WinCanvas.Wallpaper.Models;
 
 namespace WinCanvas.App.ViewModels;
 
@@ -33,12 +36,6 @@ public sealed record CornerOption(CornerPreference Value, string DisplayName);
 /// </summary>
 public partial class MainViewModel : ObservableObject
 {
-    /// <summary>图片背景支持的扩展名。</summary>
-    private static readonly string[] ImageExtensions = { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp" };
-
-    /// <summary>视频背景支持的扩展名。</summary>
-    private static readonly string[] VideoExtensions = { ".mp4", ".mkv", ".avi", ".mov", ".webm", ".wmv" };
-
     private readonly AppServices _services;
     private readonly DispatcherQueue _dispatcherQueue;
     private readonly Func<Task<string?>> _pickWallpaperFile;
@@ -189,6 +186,15 @@ public partial class MainViewModel : ObservableObject
     private string _wallpaperStatusText = "选择图片 / 视频 / .pkg 文件作为所选窗口的背景。";
 
     // ---------- 设置 ----------
+
+    /// <summary>
+    /// 设置区「当前权限」状态文本（WP5 UIPI 预检）：进程启动时经 <see cref="ProcessElevation"/>
+    /// 检测一次并缓存，运行期不变（提权只发生在进程启动时，无需响应式刷新）。
+    /// 用途：用户据此判断「目标窗口操作被 UIPI 拒绝」时是否需要以管理员身份重启本应用。
+    /// </summary>
+    public string ElevationStatusText { get; } = ProcessElevation.IsElevated
+        ? "当前权限：管理员（提升）。可对以管理员运行的窗口执行置顶 / 透明 / 穿透与背景挂接。"
+        : "当前权限：标准（未提升）。对以管理员运行的窗口操作会被系统拒绝并提示引导。";
 
     /// <summary>「启动自动恢复」开关的存储字段。</summary>
     private bool _autoRestoreOnStartup;
@@ -501,11 +507,13 @@ public partial class MainViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            // 失败撤销判重：本轮没恢复成功，允许下次刷新重试（不把失败状态当作已恢复）
+            // 失败撤销判重：本轮没恢复成功，允许下次刷新重试（不把失败状态当作已恢复）；
+            // UIPI 专项（WP5）：错误 5 时经 DescribeFailure 给出「以管理员身份重启」引导
             _pipelineProcessedHwnds.TryRemove(hwnd, out _);
+            var message = ProcessElevation.DescribeFailure(ex, $"自动恢复窗口「{item.DisplayName}」");
             RestoreDiagnostics.Log($"恢复管线：hwnd=0x{hwnd:X} 恢复失败，已撤销判重标记允许重试：{ex.Message}");
             ShowInfo(InfoBarSeverity.Error,
-                $"自动恢复窗口「{item.DisplayName}」失败：{ex.Message}。可点「刷新」再次触发恢复，或手动选中该窗口调整。");
+                $"{message}可点「刷新」再次触发恢复，或手动选中该窗口调整。");
         }
     }
 
@@ -707,23 +715,19 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    /// <summary>按扩展名推断背景类型。</summary>
+    /// <summary>
+    /// 按扩展名推断背景类型。口径统一取 <see cref="WallpaperFormats"/>（WP5 起全仓库单一事实来源，
+    /// 本方法只做 WallpaperKind → Core BackgroundType 的枚举映射，不再持有任何字面扩展名列表）。
+    /// </summary>
     private static BackgroundType DetectBackgroundType(string path)
     {
-        var ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ImageExtensions.Contains(ext))
+        return WallpaperFormats.DetectKind(path) switch
         {
-            return BackgroundType.Image;
-        }
-        if (VideoExtensions.Contains(ext))
-        {
-            return BackgroundType.Video;
-        }
-        if (ext == ".pkg")
-        {
-            return BackgroundType.Pkg;
-        }
-        return BackgroundType.None;
+            WallpaperKind.Image => BackgroundType.Image,
+            WallpaperKind.Video => BackgroundType.Video,
+            WallpaperKind.Pkg => BackgroundType.Pkg,
+            _ => BackgroundType.None,
+        };
     }
 
     // ---------- 设置 ----------

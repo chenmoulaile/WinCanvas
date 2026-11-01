@@ -25,9 +25,10 @@ graph TB
 
     subgraph WP["渲染与解析层 WinCanvas.Wallpaper"]
         WS["WallpaperService<br/>三层策略 + 会话管理"]
-        IMG["ImageWallpaperLoader<br/>ImageSharp 缩放"]
+        IMG["ImageWallpaperLoader<br/>ImageSharp 缩放<br/>GIF 多帧（WP5）"]
         VID["VideoWallpaperLoader<br/>MediaPlayer 硬解"]
         PKG["PkgWallpaperLoader<br/>repkg 解包 + 场景分析"]
+        FMT["WallpaperFormats<br/>扩展名单一事实来源（WP5）"]
         LOOP["WallpaperRenderLoop<br/>专用后台渲染线程"]
         DFR["DynamicFrameRateController<br/>60/15/暂停三档状态机"]
         WNM["WallpaperNativeMethods<br/>全屏检测 / 显示器分辨率"]
@@ -50,6 +51,8 @@ graph TB
     KIS -->|"ShowNumLockStatus(isLocked)"| WTI
     WCS --> NM
     WS --> IMG & VID & PKG
+    WS --> FMT
+    IMG & VID & PKG -.->|"扩展名口径"| FMT
     WS --> LOOP
     LOOP --> DFR
     LOOP --> WNM
@@ -84,9 +87,12 @@ graph TB
 
 ### 三层加载策略
 
-`WallpaperService.PrepareSource`（src/WinCanvas.Wallpaper/WallpaperService.cs:119）按扩展名分派：
+`WallpaperService.PrepareSource`（src/WinCanvas.Wallpaper/WallpaperService.cs）按扩展名分派；
+扩展名口径统一取 `WallpaperFormats`（WP5 起的全仓库单一事实来源：图片 `.jpg/.jpeg/.png/.bmp/.gif/.webp`、
+视频 `.mp4/.m4v/.mov/.webm/.wmv/.mkv/.avi`、pkg `.pkg`——三层加载器、服务分派、ViewModel 类型推断、
+文件选择器过滤全部引用它，不再各自维护字面列表）：
 
-1. **图片层** `ImageWallpaperLoader`：ImageSharp 解码 → 目标显示器分辨率内等比 Lanczos 缩放（只缩小不放大；目标分辨率由 `WallpaperNativeMethods.TryGetMonitorResolutionForWindow` 提供）→ Bgra32 像素整块拷贝为 Bgra8 `SoftwareBitmap`。
+1. **图片层** `ImageWallpaperLoader`：ImageSharp 解码 → 目标显示器分辨率内等比 Lanczos 缩放（只缩小不放大；目标分辨率由 `WallpaperNativeMethods.TryGetMonitorResolutionForWindow` 提供）→ Bgra32 像素整块拷贝为 Bgra8 `SoftwareBitmap`。多帧 GIF（WP5）解码全部帧到 `WallpaperSource.ImageFrames`（每帧含画面与 GIF 帧延迟，1/100 秒换算；帧数受 256MB 像素预算 / 240 帧上限截断），首帧同时作为 `ImageFrame` 兼容既有渲染判定。
 2. **视频层** `VideoWallpaperLoader`：创建 `MediaPlayer`（Media Foundation 硬解），静音 + 循环，不自动播放，启停交给帧率状态机。
 3. **pkg 层** `PkgWallpaperLoader`：`PackageReader` 读条目表 → 解包到内容 hash 命名的缓存目录（SHA256 取文件头 1MB，防抖期间重复解包直接复用）→ `.tex` 经 `TexReader` 解码为 PNG / 还原内嵌 mp4 → 场景分析：含 `.lua` 或 scene.json 引用 script 的复杂 SceneScript 场景降级为封面图；否则内嵌视频走视频层、最大 PNG 走图片层。
 
@@ -144,6 +150,11 @@ flowchart LR
 - **图片上屏（B 阶段）**：`WallpaperHostRenderer` 的 DComp 树（设备 → Target → Visual →
   Surface），逐次 `BeginDraw → IDXGISurface1::GetDC → GDI StretchDIBits（HALFTONE）→
   EndDraw → Commit`；表面按客户区尺寸重建，静态图零逐帧工作；设备失陷整树重建。
+- **GIF 动画上屏（WP5）**：壁纸会话在渲染线程按帧延迟推进——`FrameTick` 到达且当前帧
+  展示期满时索引推进 +1，`BitmapSnapshot.CopyFrom` 同步复制新帧像素（会话 `_tickGate`
+  锁内，与 Dispose 互斥），经服务层回调交宿主 `RenderImage` 重贴 + Commit；首帧由
+  `UpdateCoreAsync` 的静态路径一次性上屏。暂停态渲染循环不出帧 → 动画自然定格，
+  恢复后继续（与视频播放器联动同一状态机）。预览旁路只显示首帧。
 - **视频上屏（C 阶段，ADR：组合呈现）**：`Hosting/CompositionVideoPresenter` 以
   `MediaPlayer.GetSurface(compositor)` 拿播放器组合表面 → SurfaceBrush → SpriteVisual →
   `ICompositorDesktopInterop.CreateDesktopWindowTarget` 绑定宿主 HWND；画面由 MF + 系统组合
@@ -215,6 +226,7 @@ flowchart LR
 - `WindowItemViewModel` 包装运行期 `WindowInfo` 快照与持久化 `WindowState` 档案：属性变更立即应用 Win32 并持久化；`RestoreAsync` 在选中时把档案值真正应用回窗口，保证「界面开关 / 档案 / 窗口真实状态」三者一致（WP3 的恢复管线复用同一方法）。
 - 主界面使用**镜像属性**（`SelectedIsTopmost` 等）而不是把控件 TwoWay 直接绑到可空 `Selected`，防止换选瞬间旧控件值误写进新选中项（src/WinCanvas.App/ViewModels/MainViewModel.cs:103）。
 - 设置区开关「启动时自动恢复窗口状态」使用手写属性（`ObservableObject.SetProperty`）而非 `[ObservableProperty]`：后者在 WinUI 3 场景会生成 MVVMTK0045 警告，新增字段会突破 26 条 warning 门禁基线。
+- UIPI 权限引导（WP5）：`WindowItemViewModel` 四类属性操作与恢复管线的 catch 统一经 `ProcessElevation.DescribeFailure` 翻译——错误 5（ERROR_ACCESS_DENIED）给出「以管理员身份重启」专项引导，其余异常原语义透传；设置区「当前权限」文本（`ElevationStatusText`）来自 `ProcessElevation.IsElevated`（进程启动时检测一次并缓存）。
 
 ### 线程模型
 
@@ -247,9 +259,10 @@ flowchart LR
 
 配置与缓存路径：`%APPDATA%/WinCanvas/config.json`（UTF-8 无 BOM）；`%LOCALAPPDATA%/WinCanvas/wallpaper-cache/<文件名-hash>/`（pkg 解包缓存）。
 
-## 8. 自动化测试（WP4）
+## 8. 自动化测试（WP4 / WP5）
 
-- `tests/WinCanvas.Core.Tests`（36 用例）与 `tests/WinCanvas.Wallpaper.Tests`（48 用例），xUnit + `dotnet test` 全绿；合计 84 例。
-- 覆盖：配置防抖合并 / 原子写 / 无 BOM、窗口档案键语义、`WindowControlService` 失败语义（无效句柄抛 `Win32Exception`）与真实窗口行为冒烟、NumLock 去抖纯逻辑（`NumLockStateDebouncer`）、动态帧率状态机真值表、pkg 加载器纯逻辑（路径安全 / 场景判定 / 封面优先级）、宿主挂接矩形与 DPI 换算纯函数。
+- `tests/WinCanvas.Core.Tests`（40 用例）与 `tests/WinCanvas.Wallpaper.Tests`（68 用例），xUnit + `dotnet test` 全绿；合计 108 例。
+- 覆盖：配置防抖合并 / 原子写 / 无 BOM、窗口档案键语义、`WindowControlService` 失败语义（无效句柄抛 `Win32Exception`）与真实窗口行为冒烟、NumLock 去抖纯逻辑（`NumLockStateDebouncer`）、动态帧率状态机真值表、pkg 加载器纯逻辑（路径安全 / 场景判定 / 封面优先级）、宿主挂接矩形与 DPI 换算纯函数；WP5 新增：扩展名单一来源口径（`WallpaperFormats` 与两侧加载器一致性）、合成动画 GIF 的多帧 / 帧延迟 / 首帧别名往返、静态 WebP 解码、UIPI 错误 5 提权引导文案映射（`ProcessElevation`）。
 - 被测项目经 `InternalsVisibleTo` 对测试程序集开放 internal 纯逻辑（`SafeJoin` / `DetectComplexScene` / `FindCoverImage` / `WallpaperHostWindow` 矩形函数 / `NumLockStateDebouncer`）；公共 API 面不变。
 - 需要真实桌面会话的用例打 `[Trait("Category", "RequiresWindowsSession")]`，无头环境用 `--filter "Category!=RequiresWindowsSession"` 排除（xunit 2.9.2 无运行时跳过机制，结论见 WORKLOG WP4）。
+- 行为级验收（真实宿主上屏）由不入 sln 的诊断命令承担：`tools/Wp1AHostDiag`（WP1）、`tools/Wp5FormatDiag`（WP5：GIF 播放 / 暂停定格 / webp 上屏 / 权限引导）。

@@ -182,7 +182,7 @@ public sealed class WallpaperService : IWallpaperService
             // 整个「查旧会话 → 建/复用循环 → 写 _sessions → 启动」序列都在锁内完成，
             // 并发调用下不会出现两个循环同时新建（会话替换的先后顺序另由 _updateGates 保证）。
             var loop = oldSession?.RenderLoop ?? new WallpaperRenderLoop();
-            newSession = new WallpaperSession(hwnd, loop, source, RaiseImageFrameReady);
+            newSession = new WallpaperSession(hwnd, loop, source, RaiseImageFrameReady, RenderHostFrame);
             _sessions[hwnd] = newSession;
 
             if (oldSession == null)
@@ -235,9 +235,10 @@ public sealed class WallpaperService : IWallpaperService
                 }
             }
 
-            // 图片 / pkg 降级封面（ImageFrame 非空，规格 B.3）：宿主 DComp 一次性上屏。
+            // 图片 / pkg 降级封面（ImageFrame 非空，规格 B.3）：宿主 DComp 一次性上屏（动画 GIF 此处
+            // 上的是首帧，后续帧由会话 OnFrameTick 按帧延迟推进，WP5）。
             // 像素快照走与预览共用的 BitmapSnapshot.CopyFrom（规格 B.3 要求逻辑下沉共享，勿复制两份）；
-            // 静态图无逐帧工作——此后仅在尺寸变化 / 切换图片 / 设备失陷时由事件驱动重绘。
+            // 静态图此后无逐帧工作——仅在尺寸变化 / 切换图片 / 设备失陷时由事件驱动重绘。
             if (source.ImageFrame is { } frame)
             {
                 var snapshot = BitmapSnapshot.CopyFrom(frame);
@@ -283,9 +284,10 @@ public sealed class WallpaperService : IWallpaperService
         var host = WallpaperHostWindow.TryCreate(hwnd, out var error);
         if (host == null)
         {
-            // 文案三要素：失败 + 原因 + 用户能做什么（挂接失败时画面仍走应用内预览旁路）
+            // 文案三要素：失败 + 原因 + 用户能做什么（挂接失败时画面仍走应用内预览旁路）；
+            // 目标权限更高（UIPI 错误 5，error 文本已注明）时给「管理员重启」引导（WP5）
             Report($"背景宿主挂接失败：{error}背景暂只在应用内预览显示；" +
-                   "可重试，或检查目标窗口是否以更高权限运行。");
+                   "可重试；若目标以管理员权限运行，请以管理员身份重启 WinCanvas 后重试。");
             return null;
         }
 
@@ -465,27 +467,28 @@ public sealed class WallpaperService : IWallpaperService
 
     /// <summary>
     /// 按扩展名分派三层加载策略（在后台线程执行）。
+    /// 扩展名口径统一取 <see cref="WallpaperFormats"/>（WP5 起的单一事实来源，勿再回填字面列表）。
     /// </summary>
     private WallpaperSource PrepareSource(IntPtr hwnd, string path)
     {
-        var ext = Path.GetExtension(path).ToLowerInvariant();
-
-        // 第一层：静态图片（导入时缩放到承载窗口所在显示器的分辨率）
-        if (Loaders.ImageWallpaperLoader.IsSupported(path))
+        // 第一层：图片（含 GIF 多帧动画，WP5；导入时缩放到承载窗口所在显示器的分辨率）
+        if (WallpaperFormats.IsImage(path))
         {
             Native.WallpaperNativeMethods.TryGetMonitorResolutionForWindow(hwnd, out var w, out var h);
             return Loaders.ImageWallpaperLoader.Load(path, w, h);
         }
 
         // 第二层：视频（Media Foundation 硬件解码）
-        if (Loaders.VideoWallpaperLoader.IsSupported(path))
+        if (WallpaperFormats.IsVideo(path))
             return Loaders.VideoWallpaperLoader.Load(path);
 
         // 第三层：pkg 包（repkg 解包 + 纹理解码 + 场景分析）
-        if (ext == ".pkg")
+        if (WallpaperFormats.IsPkg(path))
             return Loaders.PkgWallpaperLoader.Load(path);
 
-        throw new NotSupportedException($"不支持的壁纸类型：{ext}。支持图片 / 视频 / .pkg。");
+        throw new NotSupportedException(
+            $"不支持的壁纸类型：{Path.GetExtension(path)}。支持图片（{string.Join(" ", WallpaperFormats.ImageExtensions)}）、" +
+            $"视频（{string.Join(" ", WallpaperFormats.VideoExtensions)}）与 .pkg。");
     }
 
     private void Report(string message) => StatusReported?.Invoke(message);
@@ -494,12 +497,35 @@ public sealed class WallpaperService : IWallpaperService
         ImageFrameReady?.Invoke(hwnd, frame);
 
     /// <summary>
+    /// 会话渲染线程的动画帧上屏回调（WP5 GIF）：按 hwnd 找到当前宿主，把新帧快照交给
+    /// DComp 渲染器重贴 + Commit（RenderImage 内部经 pump 封送并等待完成）。
+    /// _gate 短临界区只读 <see cref="_hosts"/>；宿主缺失（挂接失败 / 已被清理）静默跳过——
+    /// 无宿主即无上屏面，帧推进照常走（首帧仍可经预览旁路显示）。
+    /// </summary>
+    private void RenderHostFrame(IntPtr hwnd, BgraSnapshot snapshot)
+    {
+        WallpaperHostWindow? host;
+        lock (_gate)
+        {
+            _hosts.TryGetValue(hwnd, out host);
+        }
+
+        host?.RenderImage(snapshot);
+    }
+
+    /// <summary>
     /// 一个承载窗口的壁纸会话：渲染循环 + 当前资源 + 宿主窗口引用。Dispose 时摘除回调并释放资源。
     /// </summary>
     private sealed class WallpaperSession : IDisposable
     {
         private readonly IntPtr _hwnd;
         private readonly Action<IntPtr, SoftwareBitmap> _imageFrameReady;
+
+        /// <summary>
+        /// 动画帧上屏回调（WP5 GIF，由服务层注入 <see cref="WallpaperService.RenderHostFrame"/>）：
+        /// 渲染线程推进到新帧时调用，把快照交给宿主 DComp 渲染器。null = 无宿主可用（诊断场景），跳过上屏。
+        /// </summary>
+        private readonly Action<IntPtr, BgraSnapshot>? _renderHostFrame;
 
         /// <summary>会话是否已释放（volatile：MF 事件线程的视频帧闭包须及时看到 Dispose）。仅守卫用途。</summary>
         public bool IsDisposed => _disposed;
@@ -523,8 +549,17 @@ public sealed class WallpaperService : IWallpaperService
             return host;
         }
 
-        /// <summary>是否已推过图片首帧（仅在 _tickGate 锁内读写）。</summary>
+        /// <summary>是否已推过图片首帧 / 动画是否已起表（仅在 _tickGate 锁内读写）。</summary>
         private bool _framePushed;
+
+        /// <summary>动画当前帧索引（WP5 GIF；仅在 _tickGate 锁内读写——渲染线程串行访问）。</summary>
+        private int _frameIndex;
+
+        /// <summary>
+        /// 动画下一帧到期时刻（TickCount64 毫秒；仅在 _tickGate 锁内读写）。
+        /// 到期才推进并重贴新帧——FrameTick 以 60/15fps 高频触发，按延迟门槛过滤，绝无逐帧重贴。
+        /// </summary>
+        private long _nextFrameDueMs;
 
         /// <summary>会话是否已释放。volatile：渲染线程必须及时看到其他线程写入的最新值。</summary>
         private volatile bool _disposed;
@@ -537,12 +572,14 @@ public sealed class WallpaperService : IWallpaperService
             IntPtr hwnd,
             WallpaperRenderLoop loop,
             WallpaperSource source,
-            Action<IntPtr, SoftwareBitmap> imageFrameReady)
+            Action<IntPtr, SoftwareBitmap> imageFrameReady,
+            Action<IntPtr, BgraSnapshot>? renderHostFrame)
         {
             _hwnd = hwnd;
             RenderLoop = loop;
             Source = source;
             _imageFrameReady = imageFrameReady;
+            _renderHostFrame = renderHostFrame;
 
             loop.FrameTick += OnFrameTick;
             loop.StateChanged += OnStateChanged;
@@ -554,15 +591,29 @@ public sealed class WallpaperService : IWallpaperService
 
         /// <summary>
         /// 渲染线程每帧回调（60/15fps 由控制器决定）：
-        /// 图片层只在首次出帧时把已缩放帧推给订阅方（SoftwareBitmap 内容不变，无需重复上屏，
-        /// 保留帧回调是为后续自定义动画效果接入）；视频层由 MF 自主出帧，无需逐帧干预。
-        /// 订阅方应在回调内【同步】复制像素 —— 本锁保证复制完成后才可能发生 Dispose 释放资源。
+        /// 静态图片只在首次出帧时把已缩放帧推给订阅方（SoftwareBitmap 内容不变，无需重复上屏）；
+        /// 动画（GIF 多帧，WP5）按 <see cref="WallpaperAnimationFrame.Delay"/> 推进——到期才重贴新帧
+        /// 到宿主 DComp 表面（<see cref="AdvanceAnimationFrame"/>），无帧到期则本回调空转返回；
+        /// 暂停态（全屏 / 用户暂停）渲染循环不出帧，动画自然定格，恢复后继续推进；
+        /// 视频层由 MF 自主出帧，无需逐帧干预。
+        /// 预览旁路保持「只显示首帧」（ImageFrameReady 仅静态首帧触发一次；规格 WP5 明示预览可只显首帧）。
+        /// 订阅方 / 上屏回调应在回调内【同步】复制像素 —— 本锁保证复制完成后才可能发生 Dispose 释放资源。
         /// </summary>
         public void OnFrameTick()
         {
             lock (_tickGate)
             {
-                if (_disposed || _framePushed)
+                if (_disposed)
+                    return;
+
+                // 动画路径：多帧源（GIF）按帧延迟推进上屏；单帧路径：维持「只推一次」的既有语义
+                if (Source.ImageFrames is { Count: > 1 } frames)
+                {
+                    AdvanceAnimationFrame(frames);
+                    return;
+                }
+
+                if (_framePushed)
                     return;
 
                 var frame = Source.ImageFrame;
@@ -571,6 +622,51 @@ public sealed class WallpaperService : IWallpaperService
 
                 _framePushed = true;
                 _imageFrameReady(_hwnd, frame);
+            }
+        }
+
+        /// <summary>
+        /// 动画帧推进（渲染线程，_tickGate 锁内调用）：首帧由 UpdateCoreAsync 的宿主渲染路径
+        /// 一次性上屏（ImageFrame = frames[0]，此处只起表计时），此后到期即推进索引、
+        /// 同步复制新帧像素（与 ImageFrameReady 的复制纪律一致：在会话锁内复制，
+        /// Dispose 不可能并发释放）并经服务层回调交宿主重贴。
+        /// 上屏失败（宿主缺失 / DComp 失败）不致命：下一帧到期自动重试，帧推进节拍不受影响。
+        /// </summary>
+        private void AdvanceAnimationFrame(IReadOnlyList<WallpaperAnimationFrame> frames)
+        {
+            var now = Environment.TickCount64;
+
+            if (!_framePushed)
+            {
+                // 起表：首帧此刻已上屏（静态路径），从首帧展示时长起算第一次推进
+                _framePushed = true;
+                _frameIndex = 0;
+                _nextFrameDueMs = now + (long) frames[0].Delay.TotalMilliseconds;
+                return;
+            }
+
+            if (now < _nextFrameDueMs)
+                return; // 当前帧展示期未到：FrameTick 高频触发在这里被门槛过滤，绝无逐帧重贴
+
+            _frameIndex = (_frameIndex + 1) % frames.Count;
+            var animationFrame = frames[_frameIndex];
+
+            // 展示期下限 1ms：防 0 延迟帧把推进间隔归零（加载器已兜底 100ms，此处双保险）
+            _nextFrameDueMs = now + Math.Max(1, (long) animationFrame.Delay.TotalMilliseconds);
+
+            if (_renderHostFrame == null)
+                return;
+
+            try
+            {
+                // 渲染线程内同步复制像素（Bgra8 快照），再经 pump 封送上屏（重活不占 UI 线程）
+                var snapshot = BitmapSnapshot.CopyFrom(animationFrame.Frame);
+                _renderHostFrame(_hwnd, snapshot);
+            }
+            catch
+            {
+                // 单帧快照 / 上屏异常不杀死渲染线程（渲染循环本就吞 FrameTick 异常；
+                // 这里捕获是为了不让异常打断 _nextFrameDueMs 的推进节奏）
             }
         }
 

@@ -357,15 +357,19 @@ public sealed class WallpaperRenderLoop : IDisposable
 ### 3.8 加载器（src/WinCanvas.Wallpaper/Loaders/）
 
 ```csharp
-// ImageWallpaperLoader：第一层静态图片（.jpg/.jpeg/.png/.bmp/.gif），GIF 取第一帧
-public static readonly string[] SupportedExtensions;                 // { ".jpg", ".jpeg", ".png", ".bmp", ".gif" }
-public static bool IsSupported(string path);
-// 加载并缩放到目标分辨率（<=0 不缩放）；返回 ImageFrame 为 Bgra8 SoftwareBitmap
+// ImageWallpaperLoader：第一层图片（扩展名口径 = WallpaperFormats.ImageExtensions，
+// .jpg/.jpeg/.png/.bmp/.gif/.webp；SupportedExtensions 字段为该数组的别名，仅为 API 兼容保留）
+public static readonly string[] SupportedExtensions;                 // = WallpaperFormats.ImageExtensions
+public static bool IsSupported(string path);                         // = WallpaperFormats.IsImage(path)
+// 加载并缩放到目标分辨率（<=0 不缩放）；返回 ImageFrame 为 Bgra8 SoftwareBitmap。
+// 多帧 GIF（WP5）：解码全部帧填入 ImageFrames（每帧含 Bgra8 画面与 GIF 帧延迟），
+// ImageFrame = 首帧；帧数受内存预算上限（256MB / 单帧字节，2~240 帧）截断
 public static WallpaperSource Load(string path, int targetWidth, int targetHeight);
 
-// VideoWallpaperLoader：第二层视频（.mp4/.m4v/.mov/.webm/.wmv/.mkv）
-public static readonly string[] SupportedExtensions;
-public static bool IsSupported(string path);
+// VideoWallpaperLoader：第二层视频（扩展名口径 = WallpaperFormats.VideoExtensions，
+// .mp4/.m4v/.mov/.webm/.wmv/.mkv/.avi；SupportedExtensions 同为别名）
+public static readonly string[] SupportedExtensions;                 // = WallpaperFormats.VideoExtensions
+public static bool IsSupported(string path);                         // = WallpaperFormats.IsVideo(path)
 // 创建 MediaPlayer（静音、循环、不自动播放），Player 非空
 public static WallpaperSource Load(string path);
 
@@ -393,7 +397,8 @@ public enum WallpaperRenderState
 public sealed record WallpaperSource : IDisposable
 {
     public WallpaperKind Kind { get; init; }          // 实际加载的资源类型
-    public SoftwareBitmap? ImageFrame { get; init; }  // 图片层帧（pkg 降级封面图时也非空）
+    public SoftwareBitmap? ImageFrame { get; init; }  // 图片层帧（pkg 降级封面图时也非空；动画 GIF 时 = 首帧）
+    public IReadOnlyList<WallpaperAnimationFrame>? ImageFrames { get; init; } // 动画帧集合（WP5：多帧 GIF 非空，null = 静态）
     public MediaPlayer? Player { get; init; }         // 视频层播放器（App 端 SetMediaPlayer 绑定）
     public string? ExtractedRoot { get; init; }       // pkg 解包缓存目录
     public string? SceneJsonPath { get; init; }       // pkg 内 scene.json 完整路径
@@ -401,9 +406,58 @@ public sealed record WallpaperSource : IDisposable
     public string? StatusMessage { get; init; }       // 需上报给用户的明确提示
     public string? VideoPath { get; init; }           // 视频资源的磁盘路径
     public string OriginalPath { get; init; }         // 原始资源路径
-    public void Dispose();                            // 释放 ImageFrame 与 Player
+    public void Dispose();                            // 释放 ImageFrames（含首帧）或 ImageFrame，与 Player
+}
+
+/// <summary>动画壁纸的单帧（WP5）：Bgra8 Premultiplied 画面 + 该帧展示时长。</summary>
+public sealed record WallpaperAnimationFrame(SoftwareBitmap Frame, TimeSpan Delay);
+```
+
+### 3.10 WallpaperFormats（src/WinCanvas.Wallpaper/WallpaperFormats.cs，WP5 新增）
+
+壁纸扩展名与类型判定的**全仓库单一事实来源**：三层加载器、`WallpaperService.PrepareSource`
+分派、`MainViewModel.DetectBackgroundType`、`FilePickerService` 过滤器全部引用本类，
+禁止任何消费方再自持字面扩展名列表（.webp / .avi 的两侧漂移即此前各自维护的缺陷来源）。
+
+```csharp
+public static class WallpaperFormats
+{
+    public static readonly string[] ImageExtensions; // { ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp" }
+    public static readonly string[] VideoExtensions; // { ".mp4", ".m4v", ".mov", ".webm", ".wmv", ".mkv", ".avi" }
+    public const string PkgExtension = ".pkg";
+
+    public static bool IsImage(string path);        // 按扩展名判定（大小写不敏感）
+    public static bool IsVideo(string path);
+    public static bool IsPkg(string path);
+    public static WallpaperKind? DetectKind(string path); // 不受支持的扩展名返回 null
 }
 ```
+
+### 3.11 ProcessElevation（src/WinCanvas.Core/Services/ProcessElevation.cs，WP5 新增）
+
+进程提权检测与 UIPI 失败的引导文案。检测手段为 BCL `WindowsPrincipal.IsInRole(Administrator)`
+（取舍：`IsUserAnAdmin` 已被微软标注不推荐；令牌完整性级别需两个 P/Invoke——注释即 ADR），
+结果进程生命周期内不变并缓存为静态只读值。
+
+```csharp
+public static class ProcessElevation
+{
+    /// <summary>当前进程是否以管理员令牌运行（首次访问检测一次并缓存；身份不可得按未提升保守处理）。</summary>
+    public static bool IsElevated { get; }
+
+    /// <summary>
+    /// 把「对目标窗口操作失败」的异常翻译成三要素文案。
+    /// Win32Exception(NativeErrorCode=5)（ERROR_ACCESS_DENIED，UIPI 拦截的典型表现）时输出
+    /// 「目标窗口以更高权限运行…请以管理员身份重启 WinCanvas 后重试」的专项引导；
+    /// 其余异常保持「{operation}失败：{ex.Message}」透传。
+    /// </summary>
+    public static string DescribeFailure(Exception ex, string operation);
+}
+```
+
+调用方：`WindowItemViewModel` 的四类属性操作 catch、`MainViewModel` 恢复管线 catch
+（错误经 InfoBar 呈现）；设置区「当前权限」状态文本来自 `MainViewModel.ElevationStatusText`
+（构造时取 `ProcessElevation.IsElevated` 拼装，运行期不变）。
 
 ## 4. Win32 P/Invoke 接口清单
 

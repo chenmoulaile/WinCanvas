@@ -1,4 +1,5 @@
 using Windows.Storage.Pickers;
+using WinCanvas.Wallpaper;
 
 namespace WinCanvas.App.Services;
 
@@ -9,13 +10,17 @@ namespace WinCanvas.App.Services;
 /// </summary>
 public static class FilePickerService
 {
-    /// <summary>壁纸背景支持的扩展名（图片 / 视频 / .pkg 打包资源）。</summary>
-    public static readonly IReadOnlyList<string> SupportedExtensions = new[]
-    {
-        ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", // 图片
-        ".mp4", ".mkv", ".avi", ".mov", ".webm", ".wmv",  // 视频
-        ".pkg",                                            // Wallpaper Engine 风格打包资源
-    };
+    /// <summary>
+    /// 壁纸背景支持的扩展名（图片 / 视频 / .pkg 打包资源）。
+    /// WP5 起【不再本类自定义字面列表】，直接由 <see cref="WallpaperFormats"/> 拼装——
+    /// 扩展名口径全仓库单一事实来源（选择器能选出的文件必须与加载器能接受的完全一致，
+    /// 此前 .webp / .avi 的两侧漂移正是各自维护字面列表造成的事故来源）。
+    /// </summary>
+    public static readonly IReadOnlyList<string> SupportedExtensions =
+        WallpaperFormats.ImageExtensions
+            .Concat(WallpaperFormats.VideoExtensions)
+            .Append(WallpaperFormats.PkgExtension)
+            .ToArray();
 
     /// <summary>
     /// 弹出「选择背景文件」对话框，返回所选文件的完整路径；用户取消时返回 null。

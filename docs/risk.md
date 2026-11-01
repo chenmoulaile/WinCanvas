@@ -31,7 +31,7 @@
 - 旧值 0 歧义处理：写扩展样式前 `Marshal.SetLastSystemError(0)` 清零，仅在「返回 0 且 GetLastError 非 0」时判失败（WindowControlService.cs:199-212）。
 - 全部窗口操作失败都以 `Win32Exception` 上抛 → ViewModel 捕获 → InfoBar 提示，UI 不崩溃。
 
-**当前覆盖层次**：user32/dwmapi 调用的返回值检查与错误上抛 —— 已覆盖；**未覆盖**：系统版本探测与功能降级开关（在 Win10 上圆角功能只会报错提示，不会自动隐藏）；未对 `SetWindowPos` 失败做重试或 UIPI 专项处理（见第 4 节）。
+**当前覆盖层次**：user32/dwmapi 调用的返回值检查与错误上抛、失败文案的 UIPI 专项处理（WP5：错误 5 = ERROR_ACCESS_DENIED 时经 `ProcessElevation.DescribeFailure` 输出「以管理员身份重启」引导，见第 4 节）—— 已覆盖；**未覆盖**：系统版本探测与功能降级开关（在 Win10 上圆角功能只会报错提示，不会自动隐藏）；未对 `SetWindowPos` 失败做自动重试。
 
 ## 3. 稳定性：跨进程窗口操作与运行期竞态
 
@@ -47,7 +47,7 @@
 - 启动恢复风暴（WP3）：档案恢复管线按 200ms 间隔逐个排队、并发上限 2、任务链串行；单窗口判重（会话账本 + 壁纸会话字典）防重复加载；管线异常只记录不反噬 UI；恢复失败撤销判重允许重试（src/WinCanvas.App/ViewModels/MainViewModel.cs，`QueueRestorePipeline` / `RestoreOneAsync`）。
 - 启动恢复与 UI 解耦（WP3）：列表先可用、恢复后台进行；属性应用封送 UI 线程（可绑定属性通知的线程约束），Win32 与壁纸加载在线程池。
 
-**当前覆盖层次**：枚举容错、会话生命周期、写盘并发、宿主窗口双路径挂接（A1 嵌入失败自动降级 A2、目标销毁双信号去重清理）与视频组合呈现的异常吞噬、启动恢复管线防风暴 —— 已覆盖；自动化测试已扩展为两个 xUnit 项目共 84 用例（WP4：配置防抖合并/原子写/无 BOM、档案键语义、NumLock 去抖纯逻辑、窗口控制失败语义与真实窗口冒烟、帧率状态机真值表、pkg 纯逻辑、宿主矩形与 DPI 换算）；**未覆盖**：对已销毁 hwnd 的操作仍会走 Win32 调用并失败报错（没有 hwnd 存活预检查）；宿主挂接的端到端行为由诊断命令（tools/Wp1AHostDiag）实测覆盖，未进 xUnit 套件；恢复管线的端到端行为由诊断命令（tools/Wp3RestoreDiag）+ restore-diag.log 实测覆盖，未进 xUnit 套件。
+**当前覆盖层次**：枚举容错、会话生命周期、写盘并发、宿主窗口双路径挂接（A1 嵌入失败自动降级 A2、目标销毁双信号去重清理）与视频组合呈现的异常吞噬、启动恢复管线防风暴、GIF 帧推进的锁纪律（帧推进与 Dispose 互斥复用 `_tickGate`，单帧异常不杀渲染线程，WP5）—— 已覆盖；自动化测试已扩展为两个 xUnit 项目共 108 用例（WP4：配置防抖合并/原子写/无 BOM、档案键语义、NumLock 去抖纯逻辑、窗口控制失败语义与真实窗口冒烟、帧率状态机真值表、pkg 纯逻辑、宿主矩形与 DPI 换算；WP5：扩展名单一来源口径、动画 GIF 多帧/帧延迟/首帧别名、静态 WebP 解码、UIPI 错误 5 引导文案映射）；**未覆盖**：对已销毁 hwnd 的操作仍会走 Win32 调用并失败报错（没有 hwnd 存活预检查）；宿主挂接与 GIF 播放的端到端行为由诊断命令（tools/Wp1AHostDiag / tools/Wp5FormatDiag）实测覆盖，未进 xUnit 套件；恢复管线的端到端行为由诊断命令（tools/Wp3RestoreDiag）+ restore-diag.log 实测覆盖，未进 xUnit 套件。
 
 ## 4. 跨进程窗口操作权限
 
@@ -65,7 +65,7 @@
 - 背景挂接双路径（WP1）：跨进程 SetParent 会把宿主窗口隐式附加进目标的输入队列，个别应用可能出现焦点 / 快捷键异常 —— 已知风险缓解：宿主带 `WS_EX_TRANSPARENT`（不参与命中测试）、异常检测（焦点异常 / 父子断裂自动降级跟随模式）、诊断日志（tools/Wp1AHostDiag）。
 - 组合呈现的视频（WP1-C）不经目标进程：`MediaPlayer.GetSurface` 的组合表面由 DWM 直接合成进宿主窗口，与目标进程零交互，规避了帧数据跨进程传递面。
 
-**当前覆盖层次**：错误可见化、背景挂接的 UIPI 失败专项处理（嵌入被拒识别 Win32 错误 5 → 自动降级跟随模式并提示，WP1-D）—— 已覆盖；**未覆盖**：程序自身未做管理员提权（manifest 未声明 requireAdministrator），对提权窗口的操作会失败；未针对反作弊进程做白名单/黑名单。
+**当前覆盖层次**：错误可见化、背景挂接的 UIPI 失败专项处理（嵌入被拒识别 Win32 错误 5 → 自动降级跟随模式并提示，WP1-D）、窗口属性操作的 UIPI 引导（WP5：错误 5 经 `ProcessElevation.DescribeFailure` 输出「目标窗口以更高权限运行，请以管理员身份重启 WinCanvas 后重试」，设置区显示当前权限状态）—— 已覆盖；**未覆盖**：程序自身未做管理员提权（manifest 未声明 requireAdministrator），对提权窗口的操作会失败（引导用户手动提权重启）；未针对反作弊进程做白名单/黑名单。
 
 ## 5. 第三方依赖安全与内存问题
 
@@ -77,7 +77,8 @@
 
 **缓解措施（已在实现中）**：
 
-- 图片导入即缩放：解码后立刻等比 Lanczos 缩放到显示器分辨率（只缩小不放大），4K/8K 原图不直送 GPU，帧缓冲按缩放后尺寸分配（src/WinCanvas.Wallpaper/Loaders/ImageWallpaperLoader.cs:44-56）。
+- 图片导入即缩放：解码后立刻等比 Lanczos 缩放到显示器分辨率（只缩小不放大），4K/8K 原图不直送 GPU，帧缓冲按缩放后尺寸分配（src/WinCanvas.Wallpaper/Loaders/ImageWallpaperLoader.cs）。
+- 动画 GIF 内存预算（WP5）：帧数受「256MB 缩放后像素预算 + 240 帧上限」双重截断，超长 GIF 只保留前若干帧循环，防止 pathological 级超长动画把内存推到失控。
 - 资源确定性释放：`WallpaperSource.Dispose` 释放 `SoftwareBitmap` 与 `MediaPlayer`；会话切换即释放旧资源；`WallpaperRenderLoop.Dispose` 只发停止信号，规避 `ObjectDisposedException`（src/WinCanvas.Wallpaper/Rendering/WallpaperRenderLoop.cs:121-127）。
 - 视频懒加载：`MediaSource.CreateFromUri` 按需流式读取，不整读视频进内存（VideoWallpaperLoader.cs:47）；pkg hash 只读头部 1MB（PkgWallpaperLoader.cs:141）。
 - 依赖收敛：ImageSharp 与 repkg 锁同一版本 2.1.9，避免同依赖双版本。
@@ -96,5 +97,7 @@
 | 背景上屏（WP1 新增） | 宿主双路径（嵌入/跟随自动降级）、DComp/组合呈现、设备失陷重建、跨屏重缩放 | 跨进程 SetParent 输入队列附加的个别应用兼容性（缓解=自动降级跟随模式） |
 | 全系统键盘输入（WP2 新增） | LL 钩子装在专用消息线程（绝不占 UI 线程）、回调只做微秒级判定（读一次 GetKeyState + 去抖比较）后立即 `CallNextHookEx` 放行、绝不吞键；重活（进程启动）全部派发线程池；状态去抖防提示风暴；显式 Unhook + 进程退出双保险 | 回调内异常已被捕获但系统侧超时摘钩（LowLevelHooksTimeout）无法从托管侧探测；远程桌面 / 非标准键盘驱动可能不产生标准 NumLock 键事件（提示不出现，无副作用） |
 | 启动自动恢复（WP3 新增） | 200ms 间隔排队 + 并发上限 2 + 任务链串行（防启动风暴）；会话判重账本 + 壁纸会话字典判重（幂等，不新增锁体系）；列表先可用、恢复后台化（不阻塞首帧）；属性应用封送 UI 线程；背景文件缺失只警告并保留档案；管线异常只记录不反噬 UI；开关关闭整条管线跳过 | 启动瞬间的窗口枚举快照与恢复之间目标可能销毁（Win32 调用失败走既有错误上报路径，可重试）；同 Key 多窗口共享档案的既有取舍（见 README「已知限制」） |
-| 第三方/内存 | 确定性 Dispose、导入缩放、路径安全 | CVE 专项审查、MSB3277 警告收敛 |
-| 功能完整性 | 图片 / 视频 / pkg 封面上屏到目标窗口（宿主双路径，见 README「背景上屏」）；NumLock 键盘钩子与 WinTips 提示链路（WP2，见 architecture.md §4）；状态重启自动恢复管线（WP3，见 architecture.md §5） | SceneScript 动态渲染（见 README「已知限制」） |
+| 第三方/内存 | 确定性 Dispose、导入缩放、路径安全、动画 GIF 帧内存预算截断（WP5） | CVE 专项审查、MSB3277 警告收敛 |
+| 扩展名口径（WP5 新增） | `WallpaperFormats` 单一事实来源：加载器 / 服务分派 / ViewModel 类型推断 / 文件选择器全部引用同一份定义；xUnit 口径一致性用例钉住（两侧漂移立即红） | 无（口径面已收敛） |
+| 动画渲染（WP5 新增） | GIF 按帧延迟推进（事件驱动、暂停态定格）、帧推进与 Dispose 经 `_tickGate` 互斥、单帧异常不杀渲染线程、预览旁路只显首帧（资源与静态图同量级） | 动画 WebP 解码（ImageSharp 2.1 能力范围外）、超长 GIF 截断后无法展示被截去的帧 |
+| 功能完整性 | 图片（含 GIF 动画 / webp）/ 视频 / pkg 封面上屏到目标窗口（宿主双路径，见 README「背景上屏」）；NumLock 键盘钩子与 WinTips 提示链路（WP2，见 architecture.md §4）；状态重启自动恢复管线（WP3，见 architecture.md §5）；UIPI 错误 5 提权引导 + 设置区权限显示（WP5） | SceneScript 动态渲染（见 README「已知限制」） |

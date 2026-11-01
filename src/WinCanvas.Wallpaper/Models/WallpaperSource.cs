@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Windows.Graphics.Imaging;
 using Windows.Media.Playback;
@@ -24,8 +25,18 @@ public sealed record WallpaperSource : IDisposable
     /// 图片层（第一层）：导入时已缩放到目标显示器分辨率的帧，
     /// 可由 UI 层直接转成 WriteableBitmap / CanvasBitmap 上传 GPU。
     /// 仅 <see cref="WallpaperKind.Image"/> 或 pkg 降级为封面图时非空。
+    /// 动画（GIF 多帧，WP5）时为首帧（与 <see cref="ImageFrames"/>[0].Frame 同一实例），
+    /// 保证「ImageFrame 非空即可渲染首帧」的既有判定对动画同样成立。
     /// </summary>
     public SoftwareBitmap? ImageFrame { get; init; }
+
+    /// <summary>
+    /// 动画帧集合（WP5 新增，GIF 多帧支持）：非空表示多帧动画——
+    /// 每帧含画面与展示时长，渲染侧按帧延迟推进（壁纸会话在渲染线程驱动，暂停态自然定格）。
+    /// null = 单帧静态（jpg / png / webp / 单帧 GIF / pkg 封面）。
+    /// 首帧与 <see cref="ImageFrame"/> 同一实例（见其注释）；Dispose 由本类统一释放。
+    /// </summary>
+    public IReadOnlyList<WallpaperAnimationFrame>? ImageFrames { get; init; }
 
     /// <summary>
     /// 视频层（第二层 / pkg 内嵌视频）：Media Foundation 硬件解码播放器。
@@ -58,8 +69,18 @@ public sealed record WallpaperSource : IDisposable
 
         _disposed = true;
 
-        // 图像资源用毕即释放（非托管备份缓冲随对象释放）
-        ImageFrame?.Dispose();
+        // 图像资源用毕即释放（非托管备份缓冲随对象释放）。
+        // 动画帧（WP5）：首帧与 ImageFrame 是同一实例，只随 ImageFrames 释放一遍，避免双重 Dispose；
+        // SoftwareBitmap.Dispose 重复调用虽多数情况无害，但契约上不保证，这里显式区分两条释放路径。
+        if (ImageFrames is { } frames)
+        {
+            foreach (var animationFrame in frames)
+                animationFrame.Frame.Dispose();
+        }
+        else
+        {
+            ImageFrame?.Dispose();
+        }
 
         // 释放 MF 解码器与音频图（VideoPath 只是磁盘文件，交由缓存策略管理，不在此删除）
         Player?.Dispose();
