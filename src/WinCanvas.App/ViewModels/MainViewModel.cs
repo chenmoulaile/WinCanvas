@@ -48,6 +48,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>反向同步标志：从选中项刷新镜像属性时不再回写选中项。</summary>
     private bool _suppressSelectedSync;
 
+    /// <summary>反向同步标志：初始化从配置回填「WinTips 提示」开关时不触发钩子装卸与回写。</summary>
+    private bool _suppressWinTipsSync;
+
     /// <summary>反向同步标志：初始化从配置回填「启动自动恢复」开关值时，不触发回写与提示（WP3）。</summary>
     private bool _suppressAutoRestoreSync;
 
@@ -370,6 +373,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _suppressAutoRestoreSync = true;
         AutoRestoreOnStartup = _appConfig.AutoRestoreOnStartup;
         _suppressAutoRestoreSync = false;
+
+        // 回填「WinTips 提示」开关（v0.2.0 才真正有持久化）。
+        // 抑制标志必须打开：setter 会装/卸低级键盘钩子并弹 InfoBar，
+        // 启动阶段这是「恢复用户上次的选择」，不是「用户刚刚改了这个开关」。
+        _suppressWinTipsSync = true;
+        WinTipsEnabled = _appConfig.WinTipsIndicatorEnabled;
+        _suppressWinTipsSync = false;
+        if (_appConfig.WinTipsIndicatorEnabled)
+        {
+            // 回填时钩子还没装（setter 被抑制了），这里补一次真正的启动动作
+            _services.WinTips.IsEnabled = true;
+            _services.KeyboardIndicator.Start();
+        }
 
         // 全局热键：配置此刻才真正加载完，界面行要按配置重建、并按配置注册。
         // 修掉的接线遗漏：AttachShell 在构造函数里就跑（那时 _appConfig 还是默认值），
@@ -833,14 +849,26 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // 2) NumLock LL 键盘钩子启停 —— 开→Start() 装钩，关→Stop() 卸钩。
         // Start/Stop 内部把建线程、装/卸钩、投递全部派发线程池，UI 线程零 P/Invoke、零阻塞；
         // 钩子侧只上报「状态变化」（去抖），重复状态不会产生提示风暴。
+
+        // 启动回填走抑制分支：只恢复状态，不重复装钩、不弹「已开启」提示
+        if (_suppressWinTipsSync)
+        {
+            return;
+        }
+
         _services.WinTips.IsEnabled = value;
         if (value)
             _services.KeyboardIndicator.Start();
         else
             _services.KeyboardIndicator.Stop();
+
+        // v0.2.0：这个偏好现在会持久化（此前配置里没有字段，重启即丢）
+        _appConfig.WinTipsIndicatorEnabled = value;
+        PersistConfig();
+
         ShowInfo(InfoBarSeverity.Informational, value
-            ? "WinTips 提示已开启：NumLock 钩子安装中，按下 NumLock 后将弹出浮窗（未部署 WinTips.exe 时在此回退提示）。"
-            : "WinTips 提示已关闭：NumLock 钩子已卸载，按键不再产生任何提示。");
+            ? "WinTips 提示已开启：NumLock 钩子安装中，按下 NumLock 后将弹出浮窗（未部署 WinTips.exe 时在此回退提示）。该选择已保存，下次启动自动生效。"
+            : "WinTips 提示已关闭：NumLock 钩子已卸载，按键不再产生任何提示。该选择已保存。");
     }
 
     partial void OnFpsOverlayEnabledChanged(bool value)

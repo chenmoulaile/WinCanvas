@@ -26,8 +26,19 @@ public sealed class AppConfig
     public List<WindowState> Windows { get; set; } = new();
 
     /// <summary>
+    /// WinTips NumLock 提示开关（版本 2 新增持久化）。
+    ///
+    /// 修掉的缺陷：这个开关此前【在配置里根本没有字段】——
+    /// OnWinTipsEnabledChanged 只设 WinTips.IsEnabled 与钩子 Start/Stop，从不写盘，
+    /// 启动时也无处回填。用户每次开机都要重新打开一次 NumLock 提示，
+    /// 而它恰恰属于「一次设定、长期生效」的偏好。
+    /// 默认 false 与迁移前的界面初值一致，所以老用户升级后不会突然被装上键盘钩子。
+    /// </summary>
+    public bool WinTipsIndicatorEnabled { get; set; }
+
+    /// <summary>
     /// 全局热键绑定表（版本 2 新增）。
-    /// 为空不代表「无热键」——运行期由 <c>HotkeyTable.ApplyDefaults</c> 按动作补齐默认组合，
+    /// 为空不代表「无热键」——运行期由 <c>HotkeyTable.Normalize</c> 按动作补齐默认组合，
     /// 所以用户删掉某条只是回到默认，要真正停用请把该条的 <see cref="HotkeyBinding.Enabled"/> 置 false。
     /// </summary>
     public List<HotkeyBinding> Hotkeys { get; set; } = new();
