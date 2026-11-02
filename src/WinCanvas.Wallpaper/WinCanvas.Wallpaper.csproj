@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <!-- 壁纸 / 动态背景服务类库：与 WinCanvas.Core 相同的 WinUI 兼容目标框架 -->
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>WinCanvas.Wallpaper</RootNamespace>
@@ -44,9 +44,23 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 图片解码 / 导入缩放（第一层壁纸）：与 RePKG.Application 使用同一版本，
-         避免同一依赖出现两个版本 -->
-    <PackageReference Include="SixLabors.ImageSharp" Version="2.1.9" />
+    <!-- 图片解码 / 导入缩放（第一层壁纸）。
+
+         v0.2.0 安全升级：2.1.9 → 2.1.13。
+         2.1.9 命中 7 条 NuGet 公告（4 High），其中可达的两条正是本项目的解码路径：
+           · GHSA-2cmq-823j-5qj8 越界写          —— 受影响 < 2.1.10
+           · GHSA-rxmq-m78w-7wmc 畸形数据死循环  —— 受影响 < 2.1.11
+         图片层直接解码用户提供的 .gif/.png/.bmp（README「功能」一节），
+         即恶意文件可触发 → 属必修项。2.1.13 是 2.1.x 末版，同 major、零 API 变更。
+
+         未清掉的 3 条 High（TIFF T4/T6 编码器、HistogramEqualization）需 3.2.0+ 才有修复，
+         但本项目既不编码 TIFF 也不调直方图均衡，判定为不可达；且 ImageSharp 自 3.0.0 起
+         改为 Six Labors Split License（开源/小微营收仍可走 Apache 2.0），
+         同时 repkg 钉在 2.1.9 —— 升 3.x 属独立决策，不在本次修复范围。
+
+         版本必须与 ThirdParty/repkg 的传递引用一致：本工程直接引用版本更高，
+         NuGet 会统一到 2.1.13，无需改动子模块。 -->
+    <PackageReference Include="SixLabors.ImageSharp" Version="2.1.13" />
   </ItemGroup>
 
 </Project>

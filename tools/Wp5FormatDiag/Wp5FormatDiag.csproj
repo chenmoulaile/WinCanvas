@@ -5,7 +5,7 @@
          不加入 WinCanvas.sln（不占基线 warning 门禁口径），单独 dotnet run 驱动。
          TFM 与被测的 WinCanvas.Wallpaper 一致。 -->
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>Wp5FormatDiag</RootNamespace>

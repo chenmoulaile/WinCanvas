@@ -10,7 +10,7 @@
            clear <标题子串>    把目标窗口的置顶 / 分层透明 / 穿透 / 圆角复位到系统默认（测试前的基线复位）；
            hosts               统计全系统残留的 WinCanvasWallpaperHost 宿主窗口（应用退出后应为 0）。 -->
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>Wp3RestoreDiag</RootNamespace>

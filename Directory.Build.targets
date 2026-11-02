@@ -1,0 +1,30 @@
+<Project>
+
+  <!-- ===================================================================
+       子模块依赖治理（不修改子模块本身）
+
+       ThirdParty/repkg 是 git 子模块（MIT，v0.4.0-alpha）。它的
+       RePKG.Application.csproj 声明了 System.Drawing.Common 9.0.0，但
+       **其源码零处使用 System.Drawing**（对 ThirdParty/repkg 下所有 .cs
+       全文检索 "System.Drawing" → 0 命中）。
+
+       这个死依赖的实际代价（迁移前实测）：
+       ① 它把 System.Collections.Immutable / System.Reflection.Metadata 的
+          9.0.0 版本拉进 net8/net10 工程，与框架参考程序集 8.0/10.0 冲突，
+          每次构建产生 48 行 MSB3277 警告；
+       ② System.Drawing.Common.dll + Microsoft.Win32.SystemEvents.dll
+          被实拷进发布产物并登记进 deps.json（白占体积、白增攻击面）。
+
+       为什么在 Directory.Build.targets 里改而不是改子模块：
+       子模块的提交推不到上游，改了会让本仓库构建不可复现。
+       Directory.Build.targets 在工程文件**之后**导入，此时 Remove 能
+       生效于子模块自己声明的那条 PackageReference；且该文件属于本仓库，
+       随仓库一起提交，任何人 clone 后行为一致。
+
+       条件锁定工程名，确保只影响 RePKG.Application，不误伤 WinTips 等。
+       =================================================================== -->
+  <ItemGroup Condition=" '$(MSBuildProjectName)' == 'RePKG.Application' ">
+    <PackageReference Remove="System.Drawing.Common" />
+  </ItemGroup>
+
+</Project>

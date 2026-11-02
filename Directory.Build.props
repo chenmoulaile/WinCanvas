@@ -1,0 +1,58 @@
+<Project>
+
+  <!-- ===================================================================
+       仓库级工程基线（v0.2.0 引入）
+
+       作用域：本仓库自研工程（src/ tests/ tools/）。
+       ThirdParty/ 下的 git 子模块（repkg、WinTips）**刻意排除**：
+       它们是上游工程，不应被我们的版本策略 / Nullable / 分析器影响，
+       否则子模块一旦更新就可能整片报红，且这些改动无法推回上游。
+
+       判定方式：MSBuild 属性函数 Contains('ThirdParty')。
+       （若该条件写法有误，MSBuild 会在求值期直接报错，不会静默失效。）
+       =================================================================== -->
+
+  <PropertyGroup Condition="!$(MSBuildProjectFullPath.Contains('ThirdParty'))">
+    <!-- ===== 版本单一来源 =====
+         全仓库版本号只写这一处。exe 的 AssemblyVersion / FileVersion / ProductVersion、
+         Inno Setup 安装包 AppVersion / VersionInfoVersion 全部由此派生。
+
+         修复的实测缺陷：引入前全仓无任何 <Version> 定义（grep 命中的 24 处全是 obj/ 里
+         SDK 自动生成的默认 AssemblyInfo），导致发布包 WinCanvas.App.exe 的
+         文件版本恒为 1.0.0.0，而 git tag 是 v0.1.1、安装包靠命令行
+         /DMyAppVersion="0.1.1" 手工传 —— 三套版本口径互不相干；
+         且 .iss 未设 VersionInfoVersion，Inno Setup 的升降级文件版本比较失效。 -->
+    <WinCanvasVersion>0.2.0</WinCanvasVersion>
+    <Version>$(WinCanvasVersion)</Version>
+    <AssemblyVersion>$(WinCanvasVersion).0</AssemblyVersion>
+    <FileVersion>$(WinCanvasVersion).0</FileVersion>
+    <Product>WinCanvas</Product>
+    <Company>chenmoulaile</Company>
+    <Copyright>Copyright © chenmoulaile</Copyright>
+
+    <!-- ===== 语言与分析 =====
+         统一原先散落在三个 csproj 里逐份复制的 Nullable / ImplicitUsings。 -->
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- 启用 .NET 分析器集。TreatWarningsAsErrors 暂不开：一次性打开会把存量警告
+         变成构建失败，与本次迁移混在一起难以 review；先以 warning 暴露，逐条清零后再开。 -->
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>Default</AnalysisMode>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+
+    <!-- NuGet 漏洞审计：restore 阶段即拦已知 CVE。
+         本次 ImageSharp 2.1.9 的 7 条公告是靠 `dotnet list package / vulnerable`
+         才发现的，把它变成 restore 期的常态门禁。
+         auditMode=all：连传递依赖一起查——本项目的高危项正是经子模块传进来的。 -->
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <NuGetAuditLevel>moderate</NuGetAuditLevel>
+
+    <!-- 确定性构建，便于按 commit 反查发布产物 -->
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+</Project>
