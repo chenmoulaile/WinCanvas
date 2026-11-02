@@ -3,7 +3,11 @@
 高性能 Windows 窗口管理工具：对任意窗口实现置顶 / 透明 / 鼠标穿透 / 圆角，并支持独立壁纸背景（图片、视频、Wallpaper Engine 格式），内置 WinTips 操作提示。
 
 - 平台：Windows 11 x64（最低目标 Windows 10 1809 / 10.0.17763，圆角功能需 Windows 11）
-- 技术栈：C# / .NET 8 / WinUI 3 / Win32
+- 技术栈：C# / .NET 10 / WinUI 3 / Win32
+
+> v0.2.0 起从 .NET 8 迁到 **.NET 10**：.NET 8 与 9 于 2026-11-10 终止支持，
+> 而本项目的发布产物把运行时打进包内（self-contained），继续钉在 EOL 运行时上
+> 意味着分发出去的是一份不再收安全更新的应用。
 
 ## 功能
 
@@ -25,7 +29,10 @@
 1. **图片层**：ImageSharp 解码后用 Lanczos 一次性缩放到承载窗口所在显示器分辨率（只缩小不放大），转 Bgra8 `SoftwareBitmap`。**GIF 动画解码全部帧并按帧延迟连续播放**（宿主按帧推进上屏，全屏 / 用户暂停时定格；帧解码受内存预算上限 256MB 约束，超长 GIF 截断为前若干帧循环）；静态 webp 支持（动画 webp 为 ImageSharp 2.1 解码能力范围外，加载失败按既有错误提示）。
 2. **视频层**：`Windows.Media.Playback.MediaPlayer`（Media Foundation 硬件解码），静音循环播放。
 3. **pkg 层（Wallpaper Engine）**：`.pkg`，经 git 子模块 [repkg](https://github.com/notscuffed/repkg)（v0.4.0-alpha，源码项目引用）解包到 `%LOCALAPPDATA%/WinCanvas/wallpaper-cache/<文件名-hash>/`，`.tex` 纹理解码为 PNG、内嵌视频纹理还原为 mp4；纯视频场景走视频层、纯图场景走图片层；**含 SceneScript 动态脚本场景（存在 .lua 或 scene.json 引用 script 字段）当前不支持动态渲染，降级为仅显示封面图并给出提示**。
-4. **动态帧率**：三档状态机（`DynamicFrameRateController`）—— 窗口激活 60fps / 非激活 15fps / 检测到全屏前台窗口或用户暂停时完全暂停；全屏检测每 250ms 节流执行；暂停时同步暂停视频解码、GIF 定格。
+4. **动态帧率**：三档状态机（`DynamicFrameRateController`）—— 窗口激活 60fps / 非激活 15fps /
+   检测到全屏前台窗口或用户暂停时完全暂停；全屏与激活态检测每 250ms 节流执行；暂停时同步暂停视频解码、GIF 定格。
+   v0.2.0 接线修正：「非激活 15fps」档此前在产品代码里**永不生效**（`SetWindowActive` 全仓只有测试调用），
+   现由渲染循环的 `ActiveProbe` 每 250ms 探测目标窗口是否持有前台焦点来驱动。
 
 ### 背景上屏（宿主窗口，src/WinCanvas.Wallpaper/Hosting）
 
@@ -69,19 +76,53 @@ Win32 宿主窗口（类名 `WinCanvasWallpaperHost`），两条挂接路径自�
 - **诊断**：管线打点写入 `%LOCALAPPDATA%\WinCanvas\logs\restore-diag.log`
   （进程启动 / 列表可用 / 单窗口恢复 / 幂等跳过 / 全部完成，含耗时）。
 
+### 系统托盘与全局快捷键（src/WinCanvas.App/Services，v0.2.0 新增）
+
+- **系统托盘图标**（`TrayIconService`）：`Shell_NotifyIcon` + 一个隐藏消息窗口
+  （`MessagePumpWindow`，与全局热键共用同一条泵线程，进程只多一条线程、多一个 HWND）。
+  左键单击切换主界面显示/隐藏；右键（或中键）弹菜单：显示/隐藏主窗口、刷新窗口列表、
+  暂停/恢复壁纸渲染、开/关 NumLock 提示、退出。
+- **关闭语义**：点窗口 X 在有托盘时**不再结束程序**，而是收进托盘（进程继续看着已设属性
+  与壁纸宿主）；真退出走托盘菜单「退出」。
+- **全局快捷键**（`GlobalHotkeyService` + `HotkeyTable`）：10 项功能各一条可自定义组合键，
+  程序在后台或收进托盘时同样生效。默认值：
+
+  | 功能 | 默认组合 |
+  | --- | --- |
+  | 置顶切换 | `Ctrl+Alt+T` |
+  | 提高 / 降低透明度 | `Ctrl+Alt+↑` / `Ctrl+Alt+↓` |
+  | 鼠标穿透切换 | `Ctrl+Alt+K` |
+  | 圆角循环（无→大→小→无） | `Ctrl+Alt+R` |
+  | 刷新窗口列表 | `Ctrl+Alt+F` |
+  | 壁纸渲染暂停/恢复 | `Ctrl+Alt+W` |
+  | 清除所选窗口背景 | `Ctrl+Alt+X` |
+  | 显示 / 隐藏主界面 | `Ctrl+Alt+C` |
+  | NumLock 提示开关 | `Ctrl+Alt+N` |
+
+  改键方式：主界面「全局快捷键」区点对应行的组合键按钮，然后直接按下新组合
+  （`Esc` 取消）。校验规则：**必须至少含 Ctrl 或 Alt**——全局热键抢在焦点窗口之前，
+  允许单键等于让用户在别的程序里突然按不动那个键。被其它程序占用（Win32 错误 1409）时
+  只让那一条失败并在界面上标出「请换一个组合」，不影响其余热键。
+- **单实例互斥**：第二个实例不再重复起界面，而是唤醒第一个实例的主窗口后自己退出
+  （迁移前两实例同写一份 `config.json`，互相覆盖，表现为「设置莫名回滚」）。
+- **窗口搜索**：左侧列表上方可按标题 / 进程名 / 类名子串过滤。
+
 ### 其他
 
-- **FPS 性能监控悬浮显示**（开发阶段诊断用）：`CompositionTarget.Rendering` 帧计数 + 每秒取样，主界面开关控制。
+- **FPS 性能监控悬浮显示**（开发阶段诊断用）：`CompositionTarget.Rendering` 帧计数 + 每秒取样，主界面开关控制。开关关闭时会**退订**每帧回调（v0.2.0 修正：旧实现用 lambda 订阅静态事件且永不退订，关掉后每帧回调仍终身存在，并经静态事件根钉住整个 UI 对象图）。
 
 ## 前置条件
 
 | 依赖 | 说明 |
 | --- | --- |
-| Windows 11 x64 | 开发与运行目标环境（圆角功能依赖 Win11 DWM 属性） |
-| [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) | 本仓库在 8.0.426 上构建验证通过 |
-| [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) | 构建 WinTips 集成（NumLock 浮窗提示）所需；本仓库在 10.0.403 上构建验证通过。缺失时主构建仍成功（仅一条 warning），NumLock 提示自动走 InfoBar 回退通道 |
-| Windows App SDK | 通过 NuGet 包 `Microsoft.WindowsAppSDK 1.8.260921001` 自动还原；项目配置 `WindowsAppSDKSelfContained=true` + `WindowsPackageType=None`（非打包部署），目标机器**无需**单独安装 Windows App Runtime |
+| Windows 11 x64 | 开发与运行目标环境（圆角功能依赖 Win11 DWM 属性；Win10 1809+ 可运行，Mica 自动降级为亚克力/纯色） |
+| [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) | **必需**。本仓库在 10.0.403 上构建验证通过；`global.json` 钉住该版本（`rollForward: latestFeature`）。同时用于构建 WinTips 子模块（net10.0-windows） |
+| Windows App SDK | 通过 NuGet 包 `Microsoft.WindowsAppSDK 1.8.260921001` 自动还原；配置 `WindowsAppSDKSelfContained=true` + `SelfContained=true` + `WindowsPackageType=None`（非打包部署），目标机器**无需**安装 .NET 运行时或 Windows App Runtime |
 | git | 用于拉取两个子模块（repkg、WinTips） |
+
+> 版本单一来源：全仓库版本号只写在 `Directory.Build.props` 的 `<WinCanvasVersion>`。
+> exe 的 `AssemblyVersion` / `FileVersion` / `ProductVersion` 与安装包的
+> `AppVersion` / `VersionInfoVersion` 都由它派生（CI 从同一处读取后传给 ISCC）。
 
 ## 构建
 
@@ -97,18 +138,25 @@ git submodule update --init --recursive
 dotnet build WinCanvas.sln -c Debug
 
 # 3. 运行
-# 产物位于 src/WinCanvas.App/bin/x64/Debug/net8.0-windows10.0.19041.0/win-x64/WinCanvas.App.exe
+# 产物位于 src/WinCanvas.App/bin/x64/Debug/net10.0-windows10.0.19041.0/win-x64/WinCanvas.App.exe
 ```
 
-> 验证手段：`dotnet build WinCanvas.sln`（0 error 为过）+ `dotnet test`（xUnit，两个测试项目共 108 个用例，见 `tests/`）：
-> - `tests/WinCanvas.Core.Tests`：配置持久化（防抖合并 / 原子写 / 无 BOM）、窗口档案键语义、
->   `WindowControlService` 失败语义（无效句柄抛 `Win32Exception`）与真实窗口行为冒烟、NumLock 去抖纯逻辑、
->   UIPI 错误 5 的提权引导文案映射（WP5）；
-> - `tests/WinCanvas.Wallpaper.Tests`：动态帧率状态机真值表、pkg 加载器纯逻辑（路径安全 / 场景判定 / 封面优先级）、
->   宿主挂接矩形与 DPI 换算纯函数、扩展名单一来源口径（`WallpaperFormats`，WP5）、
->   合成动画 GIF 的多帧解码与帧延迟往返、静态 WebP 解码（WP5）。
+> 验证手段：`dotnet build WinCanvas.sln`（0 error 为过）+ `dotnet test`（xUnit，两个测试项目共 146 个用例，见 `tests/`）：
+> - `tests/WinCanvas.Core.Tests`（63）：配置持久化（防抖合并 / 原子写 / 无 BOM / **活对象撕裂** /
+>   **CTS 世代竞态** / `.bak` 恢复 / 坏文件隔离 / Dispose 兜底落盘）、窗口档案键语义、
+>   `WindowControlService` 失败语义与真实窗口行为冒烟、NumLock 去抖纯逻辑、UIPI 错误 5 的提权引导文案映射、
+>   **全局热键表**（默认补齐 / 用户值不被覆盖 / 组合键文本化 / 三类校验 / 默认表自身无冲突 / 目录覆盖全部动作）；
+> - `tests/WinCanvas.Wallpaper.Tests`（83）：动态帧率状态机真值表、pkg 加载器纯逻辑（路径安全 / 场景判定 / 封面优先级）、
+>   宿主挂接矩形与 DPI 换算纯函数、扩展名单一来源口径（`WallpaperFormats`）、合成动画 GIF 的多帧解码与帧延迟往返、
+>   静态 WebP 解码、**壁纸呈现路径分派**（`Kind` 与 `HasVideoPlayer` 互不蕴含 —— 钉住 pkg 内嵌视频不再被漏判）。
 >   需要真实桌面会话的用例打 `[Trait("Category", "RequiresWindowsSession")]`，无头环境用
 >   `dotnet test --filter "Category!=RequiresWindowsSession"` 排除（不判失败）。
+>   **注意**：这批用例在无会话环境下是【构造失败】而非跳过（有意设计，见该测试类注释），
+>   所以 CI 的默认测试步骤必须带 `--filter`。
+>
+> CI：`.github/workflows/build-and-test.yml`（`windows-latest`，构建 + headless 测试 +
+> 诊断工具编译检查 + 发布产物齐备校验 + 安装包编译）。`tools/` 下 4 个诊断工程不在
+> `WinCanvas.sln` 里，由 CI 单独编译以防无声腐烂。
 
 ## 使用说明
 
@@ -138,3 +186,17 @@ dotnet build WinCanvas.sln -c Debug
 - [架构设计](docs/architecture.md)
 - [API 说明](docs/api.md)
 - [风险评估](docs/risk.md)
+- [第三方组件与许可证声明](THIRD-PARTY-NOTICES.md)
+
+## v0.2.0 新增内容的已知限制
+
+- **全局快捷键可能被其它程序占用**：注册失败（Win32 错误 1409）时只有那一条不生效，
+  界面会标出「已被系统或其它程序占用，请换一个组合」，其余热键不受影响。
+- **默认组合键要求至少含 Ctrl 或 Alt**：这是刻意的校验，不是限制 ——
+  全局热键抢在焦点窗口之前，允许单键或仅 Shift 做全局热键会让用户在其它程序里按不动那个键。
+- **托盘图标默认在通知区域折叠面板里**：Windows 对新注册图标的默认行为，
+  需要常驻可见请在系统设置「其它系统托盘图标」里把它拖出。
+- **托盘与热键共用一条消息线程**：该线程若被模态菜单长时间占用，热键注册会延后；
+  注册调用带 5 秒超时并在超时后如实报告，不会静默假装成功。
+- **仓库根尚无自身 LICENSE 文件**：两个子模块均为 MIT（不含传染性许可证），
+  但本项目自身的授权由维护者决定，见 `THIRD-PARTY-NOTICES.md`。

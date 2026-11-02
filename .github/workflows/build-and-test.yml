@@ -1,0 +1,176 @@
+# WinCanvas CI（v0.2.0 引入）
+#
+# 迁移前仓库没有任何 CI（.github / azure-pipelines.yml / .gitlab-ci.yml 均不存在），
+# 「构建通过 + 146 用例通过」完全靠开发者本机记忆维持。本工作流把它变成每次推送都跑的门禁。
+#
+# 桌面 Win32 项目在 CI 上的两个特有坑，已在下面分别处理：
+# ① 需要真实桌面会话的用例（打 Trait RequiresWindowsSession 的那批）在无会话环境下
+#    是【构造函数抛异常 = 失败】而非跳过 —— 这是作者有意设计（见该测试类注释），
+#    所以默认测试必须带 --filter 排除，另开一个非阻断 job 在有会话的 runner 上跑。
+# ② unpackaged WinUI 3 依赖 WindowsAppSDKSelfContained + SelfContained 才能
+#    不依赖机器上的运行时，因此构建产物可直接在 runner 上运行。
+
+name: build-and-test
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: 构建 + 单元测试（headless 安全）
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # repkg / WinTips 是 git 子模块，Wallpaper 层直接项目引用 repkg 源码
+          submodules: recursive
+          fetch-depth: 0   # 供版本信息与 changelog 追溯
+
+      - name: 安装 .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: 还原（含 NuGet 漏洞审计）
+        # Directory.Build.props 已开 NuGetAudit + auditMode=all：
+        # restore 阶段就会把传递依赖里的已知 CVE 报成 NU1901~NU1904 警告。
+        run: dotnet restore WinCanvas.sln
+
+      - name: 构建 Release
+        run: >
+          dotnet build WinCanvas.sln -c Release --no-restore
+          --nologo -bl:build-release.binlog
+
+      - name: 单元测试（排除需要真实桌面会话的用例）
+        run: >
+          dotnet test WinCanvas.sln -c Release --no-build
+          --filter "Category!=RequiresWindowsSession"
+          --logger "trx;LogFileName=headless.trx"
+          --results-directory TestResults
+
+      - name: 诊断工具编译检查
+        # tools/ 下 4 个诊断工程不在 WinCanvas.sln 里（WinTips 同理由），
+        # 不单独编译就会无声腐烂。它们各自只有 1 个 Program.cs，构建很快。
+        run: |
+          dotnet build tools/Wp1AHostDiag/Wp1AHostDiag.csproj -c Release --nologo
+          dotnet build tools/Wp2NumLockDiag/Wp2NumLockDiag.csproj -c Release --nologo
+          dotnet build tools/Wp3RestoreDiag/Wp3RestoreDiag.csproj -c Release --nologo
+          dotnet build tools/Wp5FormatDiag/Wp5FormatDiag.csproj -c Release --nologo
+
+      # ---- 漏洞报告 ----
+      # 现阶段是【报告】而非【硬门禁】：ImageSharp 2.1.13 仍带 3 条 High 公告
+      # （TIFF T4/T6 编码器、HistogramEqualization），本项目不调用那些代码路径，
+      # 判定不可达；清掉需要升到 3.2.0+，而 ImageSharp 自 3.0.0 起改为
+      # Six Labors Split License 且 repkg 钉在 2.1.x —— 属独立决策。
+      # 等那件事定了之后，把 continue-on-error 去掉变成硬门禁。
+      - name: 依赖漏洞清单（当前不阻断）
+        continue-on-error: true
+        run: >
+          dotnet list src/WinCanvas.App/WinCanvas.App.csproj package
+          --vulnerable --include-transitive
+
+      - name: 上传测试结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-headless
+          path: TestResults/*.trx
+          if-no-files-found: ignore
+
+      - name: 发布产物（setup 与便携版的共同来源）
+        run: >
+          dotnet publish src/WinCanvas.App/WinCanvas.App.csproj -c Release -r win-x64
+          --self-contained true -o publish-out --nologo
+
+      - name: 校验发布产物齐备
+        # v0.1.0 的实测缺陷：dotnet publish 不收 XAML 编译产物 *.xbf 与 WinCanvas.App.pri，
+        # 缺它们的应用启动即崩溃（0xc000027b）。现在由 App.csproj 的
+        # IncludeRuntimeArtifactsInPublish Target 补齐 —— 本步骤守住它真的补上了，
+        # 否则「Target 写了但条件没命中」这种失败会在用户机器上才暴露。
+        shell: pwsh
+        run: |
+          $required = @(
+            'WinCanvas.App.exe',
+            'App.xbf',
+            'MainWindow.xbf',
+            'WinCanvas.App.pri',
+            'WinCanvas.ico'
+          )
+          $missing = @()
+          foreach ($f in $required) {
+            if (-not (Test-Path "publish-out/$f")) { $missing += $f }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::发布产物缺少：$($missing -join ', ')"
+            exit 1
+          }
+          Write-Host "发布产物齐备：$($required -join ', ')"
+
+      - name: 编译 Inno Setup 安装包
+        # 版本单一来源：从 Directory.Build.props 的 <WinCanvasVersion> 取，
+        # 不再靠命令行手工传 /DMyAppVersion —— 迁移前 exe 文件版本恒为 1.0.0.0
+        # 而 git tag 是 v0.1.1、安装包版本手工传，三套口径互不相干。
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $props = Get-Content Directory.Build.props -Raw
+          $version = [regex]::Match($props, '<WinCanvasVersion>([^<]+)</WinCanvasVersion>').Groups[1].Value
+          if (-not $version) { Write-Error '未能从 Directory.Build.props 解析 WinCanvasVersion'; exit 1 }
+          Write-Host "安装包版本 = $version"
+          & iscc "/DSourceDir=publish-out" "/DMyAppVersion=$version" installer\WinCanvas.iss
+
+      - name: 上传发布产物
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wincanvas-release
+          path: |
+            publish-out
+            installer/Output/*.exe
+          if-no-files-found: warn
+
+  # ---- 需要真实桌面会话的用例 ----
+  # 单独成 job 且【不阻断】：这批用例创建真窗口、走真 Win32 调用
+  # （置顶回读 / 透明度写入 / 穿透样式），在 runner 的会话条件下行为不完全可控。
+  # 先观察一段时间，稳定后再决定是否升级为必需检查。
+  desktop-session-tests:
+    name: 真实桌面会话用例（观察中，不阻断）
+    runs-on: windows-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 安装 .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: 构建
+        run: dotnet build WinCanvas.sln -c Release --nologo
+
+      - name: 只跑需要桌面会话的用例
+        run: >
+          dotnet test WinCanvas.sln -c Release --no-build
+          --filter "Category=RequiresWindowsSession"
+          --logger "trx;LogFileName=desktop.trx"
+          --results-directory TestResults
+
+      - name: 上传测试结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-desktop-session
+          path: TestResults/*.trx
+          if-no-files-found: ignore

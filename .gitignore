@@ -16,7 +16,12 @@
 # ===== Rider / VS Code 本地配置 =====
 .idea/
 *.iml
-.vscode/
+
+# VS Code：必须用 `.vscode/*` 而不是 `.vscode/` ——
+# git 不会进入【整个被忽略的目录】，所以旧写法里那四条 `!.vscode/xxx` 白名单
+# 一条都不会生效（目录被整体忽略后，其中的文件根本没有被重新考虑的机会）。
+# 改成忽略目录内容后，负向规则才有作用。
+.vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json

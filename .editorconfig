@@ -1,0 +1,109 @@
+# WinCanvas 代码风格基线（v0.2.0 引入）
+#
+# 为什么现在才加：迁移前仓库没有 .editorconfig，四个自研工程的 Nullable /
+# ImplicitUsings 各自复制一份，命名与格式化全靠个人习惯。
+# 本文件只做【一致性收敛】，不新开一堆 error 级规则——存量代码要先能被读懂，
+# 再谈被机器管。
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+[*.{xaml,xml,csproj,props,targets,json,iss,yml,yaml,md}]
+indent_size = 2
+
+[*.cs]
+# ===== using 排序与去重 =====
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+# ===== this. 前缀：WinUI 3 里不加更清爽 =====
+dotnet_style_qualification_for_field = false:suggestion
+dotnet_style_qualification_for_property = false:suggestion
+dotnet_style_qualification_for_method = false:suggestion
+dotnet_style_qualification_for_event = false:suggestion
+
+# ===== 显式类型 vs var =====
+# var 左侧信息足够时更可读（new 出来的、以及明显字面量），其余鼓励显式类型。
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = false:suggestion
+
+# ===== 语言关键字优先（项目现有代码一致用 int/byte/bool）=====
+dotnet_style_predefined_type_for_locals_parameters_members = true:suggestion
+dotnet_style_predefined_type_for_member_access = true:suggestion
+
+# ===== 命名约定 =====
+# 私有字段 _camelCase（全仓既有约定，含大量 [ObservableProperty] 依赖此形态）
+dotnet_naming_rule.private_fields_underscore.symbols = private_fields
+dotnet_naming_rule.private_fields_underscore.style = underscore_prefix
+dotnet_naming_rule.private_fields_underscore.severity = suggestion
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_style.underscore_prefix.capitalization = camel_case
+dotnet_naming_style.underscore_prefix.required_prefix = _
+
+# 类型与公共成员 PascalCase
+dotnet_naming_rule.types_and_members_pascal.symbols = types_and_members
+dotnet_naming_rule.types_and_members_pascal.style = pascal_case
+dotnet_naming_rule.types_and_members_pascal.severity = warning
+dotnet_naming_symbols.types_and_members.applicable_kinds = namespace,class,struct,enum,interface,property,method,delegate,event
+dotnet_naming_symbols.types_and_members.applicable_accessibilities = public,internal,protected,protected_internal,private_protected
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+
+# 常量 PascalCase（项目既有口径：DefaultDebounceDelay / ActiveFps 等）
+dotnet_naming_rule.constants_pascal.symbols = constants
+dotnet_naming_rule.constants_pascal.style = pascal_case
+dotnet_naming_rule.constants_pascal.severity = suggestion
+dotnet_naming_symbols.constants.applicable_kinds = field
+dotnet_naming_symbols.constants.applicable_modifiers = const
+
+# 局部常量与静态只读字段：允许 Pascal 或 UPPER_SNAKE，不强制（存量两种都有）
+dotnet_naming_rule.static_readfields_pascal.symbols = static_readfields
+dotnet_naming_rule.static_readfields_pascal.style = pascal_case
+dotnet_naming_rule.static_readfields_pascal.severity = suggestion
+dotnet_naming_symbols.static_readfields.applicable_kinds = field
+dotnet_naming_symbols.static_readfields.applicable_modifiers = static,readonly
+
+# ===== 代码风格 =====
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_prefer_braces = true:warning
+csharp_space_after_keywords_in_control_flow_statements = true
+
+# null 检查：项目大量用 ThrowIfNull / is not null，保持现状
+csharp_style_pattern_matching_over_is_with_cast_check = true:suggestion
+csharp_style_pattern_matching_over_as_with_null_check = true:suggestion
+csharp_style_null_check_pattern = throw_expression:suggestion
+
+# ===== 必须修的（会真咬人的）=====
+# 即发即忘的 Task：本次多个静默丢数据的缺陷都源于 `_ = SomeAsync()`
+# 不报错但必须显式写出来，逼出一次 review。
+VSTHRD110 = warning
+# 可释放对象未释放
+CA2213 = suggestion
+# 不要在 finally 里抛覆盖原异常
+CA2219 = warning
+# P/Invoke 必须标 SetLastError 后配 Marshal.GetLastWin32Error
+CA1806 = suggestion
+
+# ===== 有意豁免（附理由，避免下一个人重新争论）=====
+# CA1401 / CA5392：全仓大量手写 P/Invoke，DllImportSearchPaths 与
+# 自动生成包装在本项目由 NativeMethods 的集中注释与人工 review 兜底。
+# 已在各 csproj 的 NoWarn 里声明，这里不重复。
+
+[*.xaml]
+# WinUI 3 XAML 缩进沿用控件属性各占一行的既有排版
+indent_size = 4
+
+[*.{md,yml,yaml}]
+indent_size = 2
+trim_trailing_whitespace = false
