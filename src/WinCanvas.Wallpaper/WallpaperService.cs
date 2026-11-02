@@ -119,6 +119,28 @@ public sealed class WallpaperService : IWallpaperService
         });
     }
 
+    /// <summary>
+    /// 移除目标窗口的背景：销毁宿主与会话，让目标窗口恢复自绘内容。
+    /// 与 <see cref="CleanupSessionCoreAsync"/> 共用同一闸门，保证不与在途更新互踩。
+    /// </summary>
+    /// <param name="hwnd">目标窗口句柄。</param>
+    public Task RemoveWallpaperAsync(IntPtr hwnd)
+    {
+        var gate = _updateGates.GetOrAdd(hwnd, _ => new SemaphoreSlim(1, 1));
+        return Task.Run(async () =>
+        {
+            await gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await CleanupSessionCoreAsync(hwnd).ConfigureAwait(false);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+    }
+
     /// <inheritdoc />
     public bool IsBackgroundActive(IntPtr hwnd, string path)
     {
@@ -182,6 +204,16 @@ public sealed class WallpaperService : IWallpaperService
             // 整个「查旧会话 → 建/复用循环 → 写 _sessions → 启动」序列都在锁内完成，
             // 并发调用下不会出现两个循环同时新建（会话替换的先后顺序另由 _updateGates 保证）。
             var loop = oldSession?.RenderLoop ?? new WallpaperRenderLoop();
+
+            // v0.2.0 接线「非激活 15fps」档：旧实现 DynamicFrameRateController.SetWindowActive
+            // 全仓只有测试调用、产品代码一处没有 → 壁纸恒 60fps，README 承诺的省电档从未生效。
+            // 探针在渲染线程每 250ms 调一次，只做 GetForegroundWindow + GetAncestor，无分配无阻塞。
+            if (oldSession == null)
+            {
+                IntPtr probeTarget = hwnd;
+                loop.ActiveProbe = () => Native.WallpaperNativeMethods.IsWindowForeground(probeTarget);
+            }
+
             newSession = new WallpaperSession(hwnd, loop, source, RaiseImageFrameReady, RenderHostFrame);
             _sessions[hwnd] = newSession;
 
@@ -212,21 +244,30 @@ public sealed class WallpaperService : IWallpaperService
 
             // 切出视频（视频 → 图片 / pkg / 无）：先解除视频组合呈现，视觉内容交还图像路径。
             // EndVideo 幂等，非视频会话调用为 no-op。
-            if (source.Kind != WallpaperKind.Video)
+            //
+            // v0.2.0 修正：判定依据从 Kind == Video 换成 Player is null。
+            // PkgWallpaperLoader 对「pkg 内嵌视频」的处理是 VideoWallpaperLoader.Load() 之后
+            // 用 with 表达式把 Kind 改写为 Pkg（Kind 必须保持 Pkg：它驱动 UI 的背景类型标签
+            // 与 ExtractedRoot/SceneJsonPath 等 pkg 元数据语义），于是这三处写死
+            // Kind == Video 的判定全部永假 → BeginVideo / Player.Play() 从不执行，
+            // 而纯视频 pkg 的 ImageFrame 又为空 → 目标窗口内什么都不显示（纯色占位）。
+            // 即 README「pkg 层：纯视频场景走视频层」的承诺是失效的。
+            // 播放器存在与否才是「有没有视频要上屏」的真相，Kind 只管「资源从哪来」。
+            if (source.Player is null)
                 host.EndVideo();
 
             // 视频（规格 WP1-C ADR：组合呈现路径）：播放器经 GetSurface(compositor) 直接渲染进
             // 组合表面，SpriteVisual 按视频比例加边布局——零拷贝、零逐帧代码；帧率联动复用既有
             // 状态机（暂停态 → player.Pause() → 画面定格），无任何轮询。
-            if (source.Kind == WallpaperKind.Video && source.Player != null)
+            if (source.Player is { } videoPlayer)
             {
-                if (host.BeginVideo(source.Player))
+                if (host.BeginVideo(videoPlayer))
                 {
                     // 关键：显式起播。渲染循环的 StateChanged 仅在暂停分支触发（活跃态无状态迁移事件），
                     // 新视频会话若不在此处 Play，播放器会停在「就绪未播」状态（WP1-C 实测定位，
                     // 见 WORKLOG）。后续的暂停/恢复联动仍由 OnStateChanged 的状态迁移驱动。
                     if (newSession.RenderLoop.Controller.ShouldRender)
-                        source.Player.Play();
+                        videoPlayer.Play();
                 }
                 else
                 {
@@ -264,15 +305,25 @@ public sealed class WallpaperService : IWallpaperService
 
         // 视频层：先把播放器交给订阅方挂输出面（MediaPlayerElement.SetMediaPlayer），
         // 必须在旧会话 Dispose 之前发出，让 UI 尽快从旧播放器切换到新播放器。
-        if (source.Kind == WallpaperKind.Video && source.Player != null)
-            VideoPlayerReady?.Invoke(hwnd, source.Player);
+        // 判定同样以 Player 为准（pkg 内嵌视频的 Kind 是 Pkg，见上文注释）。
+        if (source.Player is { } readyPlayer)
+            VideoPlayerReady?.Invoke(hwnd, readyPlayer);
 
         // 旧资源用毕即释放：先摘掉旧回调（避免释放期间在途帧回调摸到已释放资源），再 Dispose
         if (oldSession != null)
             oldSession.Dispose();
 
-        // 恢复正常帧率状态（此前可能处于用户暂停）
-        ResumeRendering();
+        // 恢复正常帧率状态（此前可能处于用户暂停）。
+        //
+        // v0.2.0 修正作用域：旧代码在这里调的是全局 ResumeRendering()，它会遍历
+        // 【所有】会话清掉 PausedByUser —— 于是「给 A 窗口换一张壁纸」会把
+        // B/C/D 窗口上用户手动按下的暂停全部解掉，用户没有任何提示就发现
+        // 别的窗口壁纸又开始动了。刚换壁纸的只有 hwnd 这一个窗口，就只复位它。
+        lock (_gate)
+        {
+            if (_sessions.TryGetValue(hwnd, out var currentSession))
+                currentSession.RenderLoop.Controller.SetPausedByUser(false);
+        }
     }
 
     /// <summary>
@@ -359,6 +410,22 @@ public sealed class WallpaperService : IWallpaperService
     }
 
     /// <summary>
+    /// 判断某条渲染循环是否仍被其它在世会话持有（调用方须已持 <see cref="_gate"/>）。
+    /// 循环按 hwnd 一对一创建，正常情况下移除本 hwnd 的会话后无人复用；
+    /// 这里做一遍确认，纯粹是为了不给「清理与更新在闸门之外交错」留死角。
+    /// </summary>
+    private bool _loopsInUse(WallpaperRenderLoop loop)
+    {
+        foreach (var other in _sessions.Values)
+        {
+            if (ReferenceEquals(other.RenderLoop, loop))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// 目标销毁后的会话清理（与壁纸更新共用 <see cref="_updateGates"/> 闸门串行，
     /// 防止与在途更新互踩：更新刚建好宿主、清理又把它销毁的交错）。
     /// 在线程池线程执行；会话与宿主幂等 Dispose。
@@ -380,6 +447,24 @@ public sealed class WallpaperService : IWallpaperService
 
             session?.Dispose();
             host?.Dispose();
+
+            // v0.2.0 修线程泄漏：WallpaperRenderLoop 实现了 IDisposable，但旧代码在
+            // 会话移除路径上只 Dispose 会话与宿主，【从不 Dispose 循环】——而会话的
+            // Dispose 只摘事件不叫循环的 Dispose。于是目标窗口关闭后那条渲染线程
+            // 永久存活：每 250ms 查一次前台/全屏、ShouldRender 为真时还按 60fps
+            // 空转触发一个已经没人订阅的 FrameTick。壁纸开几个窗口再全关掉，
+            // 桌面上就留下几条这样的僵尸线程（会话数 = 泄漏线程数）。
+            // 只在「会话被移除」处收，不在 WallpaperSession.Dispose 里收——
+            // 换壁纸时 UpdateCoreAsync 会复用同一个循环（见其 oldSession?.RenderLoop）。
+            if (session != null)
+            {
+                lock (_gate)
+                {
+                    // 复用保护：若期间已有新会话接管了同一条循环，则不能停它
+                    if (!_loopsInUse(session.RenderLoop))
+                        session.RenderLoop.Dispose();
+                }
+            }
         }
         finally
         {
@@ -443,6 +528,11 @@ public sealed class WallpaperService : IWallpaperService
 
         foreach (var host in hosts)
             host.Dispose();
+
+        // 退出路径同样收掉渲染循环：会话已 Dispose（事件摘净），循环此时无人引用，
+        // 停掉它保证「应用退出零残留」不只是靠后台线程被进程回收兜底。
+        foreach (var session in sessions)
+            session.RenderLoop.Dispose();
     }
 
     /// <inheritdoc />

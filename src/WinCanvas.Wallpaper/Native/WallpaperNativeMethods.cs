@@ -19,6 +19,37 @@ internal static class WallpaperNativeMethods
     private static extern IntPtr GetForegroundWindow();
 
     /// <summary>
+    /// 判断 <paramref name="hwnd"/> 是否处于「前台激活」位置：它自身、或它所属的顶层窗口
+    /// 正持有前台焦点。
+    ///
+    /// 用途：给 <see cref="Rendering.WallpaperRenderLoop.ActiveProbe"/> 用，驱动
+    /// DynamicFrameRateController 的「激活 60fps / 非激活 15fps」分档。
+    /// 两边都归一到 GA_ROOT 再比，是因为前台句柄可能是目标窗口的子窗口
+    /// （如嵌入模式下焦点落在目标内的编辑框），直接比 hwnd 会误判成「未激活」。
+    /// GetAncestor 复用 Hosting 层已有的声明，不在这里重复一份 P/Invoke 签名。
+    /// </summary>
+    /// <param name="hwnd">待判定的窗口句柄（目标窗口）。</param>
+    /// <returns>true = 该窗口是前台窗口所属的顶层窗口。</returns>
+    public static bool IsWindowForeground(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+            return false;
+
+        IntPtr foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero)
+            return false;
+
+        if (foreground == hwnd)
+            return true;
+
+        // 归一到顶层窗口再比：任一方是子窗口时都能对上
+        IntPtr foregroundRoot = Hosting.HostNativeMethods.GetAncestor(foreground, Hosting.HostNativeMethods.GA_ROOT);
+        IntPtr targetRoot = Hosting.HostNativeMethods.GetAncestor(hwnd, Hosting.HostNativeMethods.GA_ROOT);
+
+        return foregroundRoot == hwnd || targetRoot == foreground || (foregroundRoot != IntPtr.Zero && foregroundRoot == targetRoot);
+    }
+
+    /// <summary>
     /// 判断指定显示器上的窗口是否构成"全屏前台窗口"：
     /// 前台窗口无边框、置顶、且矩形完整覆盖所在显示器的整个矩形。
     /// </summary>

@@ -34,7 +34,7 @@ public sealed record CornerOption(CornerPreference Value, string DisplayName);
 ///   FPS 性能监控悬浮显示。
 /// 业务逻辑全部在本类，code-behind 只做服务装配。
 /// </summary>
-public partial class MainViewModel : ObservableObject
+public partial class MainViewModel : ObservableObject, IDisposable
 {
     private readonly AppServices _services;
     private readonly DispatcherQueue _dispatcherQueue;
@@ -124,6 +124,90 @@ public partial class MainViewModel : ObservableObject
     /// <summary>窗口列表。</summary>
     public ObservableCollection<WindowItemViewModel> Windows { get; } = new();
 
+    /// <summary>
+    /// 左侧列表实际绑定的是这一份【过滤视图】（v0.2.0 新增）。
+    ///
+    /// 为什么需要：迁移前的界面把全部可见顶层窗口直接铺在 ListView 里，没有任何检索手段。
+    /// 实测一次枚举就有 20+ 项（还混着 ApplicationFrameHost、TextInputHost 这类
+    /// 用户根本不会去操作的框架窗口），窗口一多就只能靠滚动找 ——
+    /// 对一个「随时调一下某个窗口」的工具，这是最直接的体验瓶颈。
+    ///
+    /// <see cref="Windows"/> 仍是完整数据源（恢复管线、选中项匹配都基于它），
+    /// 本集合只决定「显示哪些」，重建时整体替换，避免增量同步引入的不一致。
+    /// </summary>
+    public ObservableCollection<WindowItemViewModel> FilteredWindows { get; } = new();
+
+    /// <summary>
+    /// 窗口搜索关键字：匹配标题、进程名或类名（不区分大小写）。
+    /// 空串 = 显示全部。
+    /// </summary>
+    [ObservableProperty]
+    private string _windowFilter = string.Empty;
+
+    /// <summary>过滤后的条目数（界面显示「N / M」用）。</summary>
+    [ObservableProperty]
+    private int _filteredCount;
+
+    /// <summary>按当前关键字重建过滤视图。</summary>
+    private void RebuildFiltered()
+    {
+        string keyword = _windowFilter?.Trim() ?? string.Empty;
+
+        FilteredWindows.Clear();
+
+        if (keyword.Length == 0)
+        {
+            foreach (var item in Windows)
+            {
+                FilteredWindows.Add(item);
+            }
+        }
+        else
+        {
+            foreach (var item in Windows)
+            {
+                if (item.MatchesFilter(keyword))
+                {
+                    FilteredWindows.Add(item);
+                }
+            }
+        }
+
+        FilteredCount = FilteredWindows.Count;
+    }
+
+    partial void OnWindowFilterChanged(string value)
+    {
+        // 搜索框每敲一个字都会进来一次。重建本身是 O(n) 的集合替换，
+        // 当前规模（几十到几百窗口）下无需防抖；若将来窗口数上千再考虑节流。
+        RebuildFiltered();
+    }
+
+    /// <summary>
+    /// 刷新按钮是否可点（= 不在刷新中）。
+    /// 迁移前按钮从不置灰，连点会把 N 条枚举管线排进队列；
+    /// 用一个正向语义的属性表达「可以点」，比在 XAML 里做布尔取反更清楚。
+    /// </summary>
+    public bool CanRefresh => !IsRefreshing;
+
+    partial void OnIsRefreshingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanRefresh));
+    }
+
+    /// <summary>
+    /// 「没有匹配的窗口」提示的可见性：仅在【有窗口但全被过滤掉】时显示。
+    /// 区分「枚举结果为空」与「搜索没命中」两种空白，避免用户以为程序坏了。
+    /// </summary>
+    public Visibility EmptyFilterVisibility =>
+        Windows.Count > 0 && FilteredWindows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>过滤视图变化后刷新提示可见性（由 RebuildFiltered 调用）。</summary>
+    partial void OnFilteredCountChanged(int value)
+    {
+        OnPropertyChanged(nameof(EmptyFilterVisibility));
+    }
+
     /// <summary>圆角偏好候选（无 / 大圆角 / 小圆角）。</summary>
     public IReadOnlyList<CornerOption> CornerOptions { get; } = new[]
     {
@@ -141,6 +225,7 @@ public partial class MainViewModel : ObservableObject
     private bool _isRefreshing;
 
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ClearWallpaperCommand))]
     private bool _hasSelection;
 
     // ---------- 选中项的镜像属性（避免把控件 TwoWay 直接绑到可空的 Selected 上，
@@ -334,6 +419,9 @@ public partial class MainViewModel : ObservableObject
             }
 
             Selected = restored;
+
+            // 列表重建后同步一次过滤视图（v0.2.0 新增窗口搜索）
+            RebuildFiltered();
 
             // 列表可用打点（WP3 DoD「启动到列表可用 < 1.5s」的打点证据）：列表此刻已重建可交互；
             // 恢复管线在本行之后才后台触发，不阻塞列表构建与首帧渲染。
@@ -757,14 +845,56 @@ public partial class MainViewModel : ObservableObject
 
     // ---------- 配置持久化 ----------
 
+    /// <summary>
+    /// 档案集合的变更锁。
+    ///
+    /// 为什么需要：<c>AppConfig.Windows</c> 是 <see cref="List{T}"/>，不是线程安全集合，
+    /// 而它有两个写入方——UI 线程（开关、滑块、选文件）与 WP3 恢复管线的线程池线程
+    /// （并发上限 2，RestoreAsync 回读真实状态后写回档案）。两个线程同时 Add 会
+    /// 破坏 List 内部数组（元素丢失、索引越界，甚至 size 与数组不一致后在
+    /// ConfigurationService 序列化时抛异常）。
+    /// ConfigurationService 侧已改为「锁内序列化成不可变快照」，本锁负责的是
+    /// 快照生成【之前】的这段共享可变状态。
+    /// </summary>
+    private readonly object _configGate = new();
+
     /// <summary>把窗口档案并入配置并实时保存（ConfigurationService 内部防抖批量落盘）。</summary>
     private void PersistState(WindowState state)
     {
-        if (!_appConfig.Windows.Contains(state))
+        lock (_configGate)
         {
-            _appConfig.Windows.Add(state);
+            if (!_appConfig.Windows.Contains(state))
+            {
+                _appConfig.Windows.Add(state);
+            }
+
+            _services.Configuration.Update(_appConfig);
         }
-        _services.Configuration.Update(_appConfig);
+    }
+
+    /// <summary>
+    /// 非档案路径的配置写入（全局开关等）同样走配置锁：
+    /// 它与 PersistState 共享 _appConfig 实例，混用两套互斥等于没有互斥。
+    /// </summary>
+    private void PersistConfig()
+    {
+        lock (_configGate)
+        {
+            _services.Configuration.Update(_appConfig);
+        }
+    }
+
+    /// <summary>
+    /// 启动初始化失败的对外报告（由 MainWindow 的兜底 catch 调用）。
+    /// 旧实现里这条路径完全静默：InitializeAsync 抛异常 → 即发即忘的 Task 无人观察 →
+    /// 用户面对一个永远空白、也没有任何提示的界面。
+    /// </summary>
+    /// <param name="exception">失败原因。</param>
+    public void ReportStartupFailure(Exception exception)
+    {
+        ShowInfo(InfoBarSeverity.Error,
+            $"启动初始化失败：{exception.Message}。窗口列表与已保存档案可能未恢复，" +
+            "可点「刷新」重试；详情见 %LOCALAPPDATA%\\WinCanvas\\logs\\crash.log。");
     }
 
     // ---------- 提示 ----------
@@ -778,5 +908,19 @@ public partial class MainViewModel : ObservableObject
             InfoBarMessage = message;
             IsInfoBarOpen = true;
         });
+    }
+
+    /// <summary>
+    /// 释放：先收外壳（注销全局热键、摘托盘图标、停消息线程），再停 FPS 监控。
+    ///
+    /// 顺序说明：全局热键是【系统级】资源，不显式注销就会一直占着那组按键，
+    /// 即便本进程即将退出——期间用户在别的程序里按那组键是没反应的。
+    /// FpsMonitor 订阅的是静态 CompositionTarget.Rendering，不摘就每帧回调
+    /// 终身存在，并经静态事件根钉住本 ViewModel 与整棵 XAML 树。
+    /// </summary>
+    public void Dispose()
+    {
+        DisposeShell();
+        _fpsMonitor.Dispose();
     }
 }

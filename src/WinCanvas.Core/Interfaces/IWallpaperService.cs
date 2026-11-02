@@ -21,6 +21,13 @@ public interface IWallpaperService
     Task UpdateWallpaperAsync(IntPtr hwnd, string path);
 
     /// <summary>
+    /// 移除指定窗口的背景，销毁宿主与会话，让目标窗口恢复自己的绘制内容（v0.2.0 引入）。
+    /// 之前只有「设置 / 切换」没有「清除」——用户挂上背景后只能靠关掉目标窗口来摆脱它。
+    /// </summary>
+    /// <param name="hwnd">承载壁纸的窗口句柄。</param>
+    Task RemoveWallpaperAsync(IntPtr hwnd);
+
+    /// <summary>
     /// 查询指定窗口当前是否已挂着「同一背景文件」的活动壁纸会话（WP3 引入）。
     /// 供启动 / 刷新时的档案恢复管线判重：会话已存在则跳过重复加载
     /// （图片重复解码、pkg 重复解包都是纯浪费）。实现直接查询服务内部的

@@ -37,6 +37,24 @@ public partial class WindowItemViewModel : ObservableObject
     /// <summary>列表副标题：进程名 (进程Id) · 类名。</summary>
     public string Subtitle { get; }
 
+    /// <summary>
+    /// 是否匹配搜索关键字（标题 / 进程名 / 类名，不区分大小写，子串匹配）。
+    /// 供主界面的窗口搜索框使用——多窗口场景下靠滚动找目标太慢。
+    /// </summary>
+    /// <param name="keyword">已 trim 且非空的关键字。</param>
+    /// <returns>true = 应当显示。</returns>
+    public bool MatchesFilter(string keyword)
+    {
+        if (keyword.Length == 0)
+        {
+            return true;
+        }
+
+        return Info.Title.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+            || Info.ProcessName.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+            || Info.ClassName.Contains(keyword, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>句柄的十六进制展示文本。</summary>
     public string HwndText { get; }
 

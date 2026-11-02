@@ -23,7 +23,7 @@ namespace WinCanvas.App.Services;
 ///   MediaPlayerElement（SetMediaPlayer）作为输出面，画面由 Media Foundation 自主呈现。
 /// 注意：宿主窗口（WP1-A 引入）才是壁纸的主输出；本控制器是旁路预览（规格 WP1-D 预览旁路化）。
 /// </summary>
-public sealed class WallpaperPreviewController
+public sealed class WallpaperPreviewController : IDisposable
 {
     /// <summary>图片画面承载控件（预览区内的 Image）。</summary>
     private readonly Image _imagePresenter;
@@ -34,6 +34,11 @@ public sealed class WallpaperPreviewController
     /// <summary>UI 线程调度队列：渲染线程 / 线程池事件封送回 UI 的通道。</summary>
     private readonly DispatcherQueue _dispatcherQueue;
 
+    /// <summary>事件源（保留引用才能退订）。</summary>
+    private readonly WallpaperService _wallpaper;
+
+    private bool _disposed;
+
     public WallpaperPreviewController(
         Image imagePresenter,
         MediaPlayerElement playerPresenter,
@@ -43,10 +48,30 @@ public sealed class WallpaperPreviewController
         _imagePresenter = imagePresenter;
         _playerPresenter = playerPresenter;
         _dispatcherQueue = dispatcherQueue;
+        _wallpaper = wallpaper;
 
-        // 事件在服务生命周期内持续有效，控制器由 MainWindow 持有，无需退订
+        // 旧注释称「服务生命周期内持续有效，无需退订」——在窗口可重建的场景下不成立：
+        // WallpaperService 是进程级单例，本控制器是窗口级对象，窗口关掉再开就会
+        // 攒下第二个仍被服务事件链引用的控制器（连带它手里的 XAML 控件）。
+        // 现在由 MainWindow 的 Closed 路径显式退订。
         wallpaper.ImageFrameReady += OnImageFrameReady;
         wallpaper.VideoPlayerReady += OnVideoPlayerReady;
+    }
+
+    /// <summary>
+    /// 释放：退订壁纸服务的两个事件，断开「服务 → 控制器 → XAML 控件」的引用链。
+    /// 幂等。
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _wallpaper.ImageFrameReady -= OnImageFrameReady;
+        _wallpaper.VideoPlayerReady -= OnVideoPlayerReady;
     }
 
     /// <summary>

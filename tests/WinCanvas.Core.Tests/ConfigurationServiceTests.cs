@@ -55,8 +55,10 @@ public sealed class ConfigurationServiceTests : IDisposable
 
         var config = await service.LoadAsync();
 
-        // 默认值口径：Version=1、自动恢复开、无窗口档案（与 AppConfig 的属性初始化器一致）
-        Assert.Equal(1, config.Version);
+        // 默认值口径：版本取当前支持版本、自动恢复开、无窗口档案（与 AppConfig 的属性初始化器一致）。
+        // 断言引用 ConfigurationService.SupportedConfigVersion 而不是写死数字：
+        // 写死的话每次配置格式加字段都要来改测试，那不是测试在保护行为，只是在记录历史。
+        Assert.Equal(ConfigurationService.SupportedConfigVersion, config.Version);
         Assert.True(config.AutoRestoreOnStartup);
         Assert.Empty(config.Windows);
         // 首次加载只读不写：磁盘上不应出现 config.json（写盘只发生在 Update/Flush 路径）
@@ -72,7 +74,7 @@ public sealed class ConfigurationServiceTests : IDisposable
 
         var config = await service.LoadAsync(); // 不应抛 JsonException 等任何异常
 
-        Assert.Equal(1, config.Version);
+        Assert.Equal(ConfigurationService.SupportedConfigVersion, config.Version);
         Assert.True(config.AutoRestoreOnStartup);
         Assert.Empty(config.Windows);
     }

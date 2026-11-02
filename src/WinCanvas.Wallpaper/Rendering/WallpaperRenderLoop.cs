@@ -18,8 +18,18 @@ public sealed class WallpaperRenderLoop : IDisposable
     private readonly Thread _thread;
     private readonly ManualResetEventSlim _stopEvent = new(false);
 
-    /// <summary>全屏前台窗口检测的最小间隔（ms）：P/Invoke 本身很轻，但不必每帧都查。</summary>
-    private static readonly TimeSpan FullscreenCheckInterval = TimeSpan.FromMilliseconds(250);
+    /// <summary>
+    /// 状态探测（全屏前台窗口 / 承载窗口激活态）的最小间隔：
+    /// 两类 P/Invoke 本身很轻，但不必每帧都查。
+    /// </summary>
+    private static readonly TimeSpan StateCheckInterval = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// 「承载壁纸的窗口是否前台激活」探针（渲染线程调用，须轻量、绝不阻塞）。
+    /// 由消费方（WallpaperService）按会话注入；null = 不探测，保持恒 60fps 的既有行为。
+    /// 接进 <see cref="DynamicFrameRateController.SetWindowActive"/>，让「非激活 15fps」档真正生效。
+    /// </summary>
+    public Func<bool>? ActiveProbe { get; set; }
 
     /// <summary>
     /// 帧回调：在每个应渲染的帧上于渲染线程触发。
@@ -62,16 +72,20 @@ public sealed class WallpaperRenderLoop : IDisposable
         // Stopwatch 单调时钟：避免系统时间跳变影响帧间隔
         var clock = Stopwatch.StartNew();
         long nextFrameMs = 0;
-        long lastFullscreenCheckMs = long.MinValue;
+        long lastStateCheckMs = long.MinValue;
         bool lastFullscreen = false;
+        bool? lastActive = null;
+
+        // 上一次已对外通报的渲染状态。null = 尚未通报过，首轮必发一次让订阅方对齐。
+        WallpaperRenderState? lastEmittedState = null;
 
         while (!_stopEvent.IsSet)
         {
-            // ---- 全屏检测（节流至每 250ms 一次）----
+            // ---- 状态探测（节流至每 250ms 一次）：全屏前台窗口 + 承载窗口激活态 ----
             var nowMs = clock.ElapsedMilliseconds;
-            if (nowMs - lastFullscreenCheckMs >= (long) FullscreenCheckInterval.TotalMilliseconds)
+            if (nowMs - lastStateCheckMs >= (long) StateCheckInterval.TotalMilliseconds)
             {
-                lastFullscreenCheckMs = nowMs;
+                lastStateCheckMs = nowMs;
 
                 var fullscreen = WallpaperNativeMethods.IsForegroundWindowFullscreen();
                 if (fullscreen != lastFullscreen)
@@ -79,14 +93,52 @@ public sealed class WallpaperRenderLoop : IDisposable
                     lastFullscreen = fullscreen;
                     Controller.SetFullscreenDetected(fullscreen);
                 }
+
+                // 激活态探针（v0.2.0 接线）：旧实现 DynamicFrameRateController.SetWindowActive
+                // 全仓库【只有测试调用】，产品代码一处没有 → 三档帧率里的「非激活 15fps」
+                // 档在生产环境永不生效，壁纸永远按 60fps 跑，README 承诺的省电档形同虚设。
+                // 探针异常一律按「维持当前档」处理：绝不让渲染线程因探测崩掉。
+                var probe = ActiveProbe;
+                if (probe != null)
+                {
+                    try
+                    {
+                        bool active = probe();
+                        if (active != lastActive)
+                        {
+                            lastActive = active;
+                            Controller.SetWindowActive(active);
+                        }
+                    }
+                    catch
+                    {
+                        // 吞掉：探测失败保持现状，下一轮再试
+                    }
+                }
+            }
+
+            // ---- 状态同步：仅在状态真正变化时通报一次（边沿触发）----
+            //
+            // v0.2.0 修正的两个连带缺陷：
+            // ① 旧代码把 StateChanged?.Invoke 写在「暂停分支」内部，于是暂停期间每轮
+            //   （FrameInterval 在暂停档是 ~125ms）都无条件通报一次 → 订阅方每秒被叫 8 次
+            //   去 player.Pause() + 跨线程读 PlaybackSession，纯属空转。
+            // ② 更要命的是：因为通报点只在暂停分支，【活跃态永远不会被通报】，
+            //   订阅方 OnStateChanged 里「Active60Fps/Inactive15Fps → player.Play()」
+            //   那条恢复分支成了不可达的死代码 —— 全屏暂停结束后视频不会恢复播放，
+            //   而 README「全屏前台窗口出现时自动暂停、退出后恢复」承诺的是这个行为。
+            // 现在把通报移到循环顶部按状态变化边沿触发，两个问题一起解决。
+            var state = Controller.CurrentState;
+            if (state != lastEmittedState)
+            {
+                lastEmittedState = state;
+                StateChanged?.Invoke(state);
             }
 
             // ---- 暂停态：不渲染，按轮询间隔睡眠等待恢复 ----
             var interval = Controller.FrameInterval;
             if (!Controller.ShouldRender)
             {
-                // 状态切换为暂停时立即上报一次，让视频层等资源降载
-                StateChanged?.Invoke(Controller.CurrentState);
                 _stopEvent.Wait(interval);
                 continue;
             }

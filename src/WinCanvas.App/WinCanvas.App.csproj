@@ -25,7 +25,19 @@
     <Platform>x64</Platform>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+
+    <!-- ===== 应用图标（v0.2.0 新增）=====
+         exe 文件图标 + 任务栏/alt-tab 图标 + 托盘图标的共同来源。
+         迁移前没有任何图标设置：exe 用 VS 默认图标，任务栏是通用窗口图标，
+         一个要长期驻留在通知区域的应用却没有可辨识的图标。 -->
+    <ApplicationIcon>..\..\assets\icons\WinCanvas.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 随产物发布 .ico：托盘与窗口图标在运行期按 AppContext.BaseDirectory 加载。
+         取不到该文件时代码会静默降级（不影响主功能），但界面就没有自定义图标。 -->
+    <None Include="..\..\assets\icons\WinCanvas.ico" Link="WinCanvas.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Microsoft.WindowsAppSDK 1.x 稳定线最新版（2.x 为新大版本，未在本环境对 .NET 8 验证）。
@@ -116,6 +128,10 @@
       <_PublishWinTipsFiles Include="$(OutDir)WinTips\**\*.*" />
       <ResolvedFileToPublish Include="@(_PublishWinTipsFiles)">
         <RelativePath>WinTips\%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
+      </ResolvedFileToPublish>
+      <!-- 4) 应用图标（托盘与窗口图标在运行期按文件路径加载，必须随包发布） -->
+      <ResolvedFileToPublish Include="$(OutDir)WinCanvas.ico" Condition="Exists('$(OutDir)WinCanvas.ico')">
+        <RelativePath>WinCanvas.ico</RelativePath>
       </ResolvedFileToPublish>
     </ItemGroup>
   </Target>

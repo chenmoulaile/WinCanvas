@@ -242,13 +242,28 @@ internal sealed class CompositionVideoPresenter : IDisposable
 
     /// <summary>
     /// 解除附着（切出视频 / 会话销毁）：组合树 Root 清空、释放播放器表面与画刷（幂等）。
-    /// 组合目标保留（复用；进程退出随 Compositor 回收）。pump 线程调用（内部封送）。
+    /// 组合目标保留（复用；Dispose 时随 Compositor 一并回收）。pump 线程调用（内部封送）。
     /// </summary>
     public void Detach()
     {
         if (_disposed)
             return;
 
+        DetachCore();
+    }
+
+    /// <summary>
+    /// 拆除组合树的实际工作，【不带 _disposed 判定】。
+    ///
+    /// 为什么单拆一层：旧实现是 <c>Dispose() { _disposed = true; Detach(); }</c>
+    /// 而 <c>Detach()</c> 首行就是 <c>if (_disposed) return;</c> —— 先置标志再调用，
+    /// 于是释放路径上的整段拆除代码【永远不会执行】，Compositor / CompositionTarget /
+    /// PlayerSurface / CompositionBrush / SpriteVisual 全部滞留，且专用 DispatcherQueue
+    /// 线程从不关闭（每个视频宿主净漏一条线程 + 一棵组合树）。
+    /// 现在 Detach 保留幂等判定供「切出视频」路径使用，Dispose 直接走 DetachCore。
+    /// </summary>
+    private void DetachCore()
+    {
         RunOnCompositionThread(() =>
         {
             try
@@ -263,6 +278,7 @@ internal sealed class CompositionVideoPresenter : IDisposable
                 _brush = null;
                 _playerSurface?.Dispose();
                 _playerSurface = null;
+                _videoVisual?.Dispose();
                 _videoVisual = null;
             }
             catch (Exception ex)
@@ -272,14 +288,57 @@ internal sealed class CompositionVideoPresenter : IDisposable
         });
     }
 
-    /// <summary>释放全部资源（应用退出）。pump 线程调用（内部封送）。</summary>
+    /// <summary>
+    /// 释放全部资源（应用退出）：拆组合树 → 释放 Compositor → 关闭专用组合线程。
+    /// pump 线程调用（内部封送）。
+    /// </summary>
     public void Dispose()
     {
         if (_disposed)
             return;
 
         _disposed = true;
-        Detach();
+
+        // 1) 拆树（不经 Detach 的幂等判定，见 DetachCore 注释）
+        DetachCore();
+
+        // 2) 释放 Compositor：它才是真正持有组合设备资源的一方。
+        //    旧实现连这一步都没有，组合树只能等 RCW 终结器兜底，何时回收全看 GC 心情。
+        try
+        {
+            _target?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            HostDiagnostics.Log($"视频组合目标释放失败 host=0x{_hostHwnd:X}：{ex.GetType().Name}");
+        }
+
+        _target = null;
+
+        try
+        {
+            _compositor?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            HostDiagnostics.Log($"视频组合器释放失败 host=0x{_hostHwnd:X}：{ex.GetType().Name}");
+        }
+
+        _compositor = null;
+
+        // 3) 关闭专用 DispatcherQueue 线程。带超时等待：ShutdownQueueAsync 需要队列
+        //    排空，若该线程已被别的宿主占用/卡住，宁可留一条待回收的线程，
+        //    也不能把退出路径挂死在这里。
+        try
+        {
+            _dispatcherQueueController.ShutdownQueueAsync()
+                .AsTask()
+                .Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception ex)
+        {
+            HostDiagnostics.Log($"视频组合线程关闭未完成 host=0x{_hostHwnd:X}：{ex.GetType().Name}");
+        }
     }
 
     /// <summary>

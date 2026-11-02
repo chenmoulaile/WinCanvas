@@ -392,7 +392,10 @@ internal sealed class WallpaperHostRenderer : IDisposable
             return false;
         }
 
-        HostDiagnostics.Log($"DComp 图像上屏 host=0x{_hostHwnd:X} surface={_surfaceW}x{_surfaceH}");
+        // 成功路径的打点降到 Verbose 档：这一行在每次 Commit 都执行，
+        // GIF/动画下等于每秒 60 次同步文件 IO 压在渲染线程上，而它对正常运行毫无价值。
+        // 失败路径（上面的 Commit 失败）仍走 Log，无条件保留。
+        HostDiagnostics.LogRender($"DComp 图像上屏 host=0x{_hostHwnd:X} surface={_surfaceW}x{_surfaceH}");
         return true;
     }
 
