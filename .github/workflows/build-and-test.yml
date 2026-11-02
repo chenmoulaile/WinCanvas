@@ -1,7 +1,7 @@
 # WinCanvas CI（v0.2.0 引入）
 #
 # 迁移前仓库没有任何 CI（.github / azure-pipelines.yml / .gitlab-ci.yml 均不存在），
-# 「构建通过 + 146 用例通过」完全靠开发者本机记忆维持。本工作流把它变成每次推送都跑的门禁。
+# 「构建通过 + 186 用例通过」完全靠开发者本机记忆维持。本工作流把它变成每次推送都跑的门禁。
 #
 # 桌面 Win32 项目在 CI 上的两个特有坑，已在下面分别处理：
 # ① 需要真实桌面会话的用例（打 Trait RequiresWindowsSession 的那批）在无会话环境下
@@ -20,8 +20,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# contents: write —— 标签推送时这一步要创建/更新 GitHub Release 并上传资产，
+# 只给 read 会在 Invoke-RestMethod 处 403（Resource not accessible by integration），
+# 而且是在跑完全部构建与测试之后才失败，白等一趟。
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-test:
@@ -117,9 +120,14 @@ jobs:
           Write-Host "发布产物齐备：$($required -join ', ')"
 
       - name: 编译 Inno Setup 安装包
+        id: iscc
         # 版本单一来源：从 Directory.Build.props 的 <WinCanvasVersion> 取，
         # 不再靠命令行手工传 /DMyAppVersion —— 迁移前 exe 文件版本恒为 1.0.0.0
         # 而 git tag 是 v0.1.1、安装包版本手工传，三套口径互不相干。
+        #
+        # v0.3.0 修正：`& iscc` 在 windows-latest 上直接失败（ISCC 不在 PATH，
+        # 只在 `C:\Program Files (x86)\Inno Setup 6\` 里）。现在按绝对路径找，
+        # 找不到再用 choco 装；并且把解析到的路径写进后续步骤复用。
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
@@ -127,17 +135,84 @@ jobs:
           $version = [regex]::Match($props, '<WinCanvasVersion>([^<]+)</WinCanvasVersion>').Groups[1].Value
           if (-not $version) { Write-Error '未能从 Directory.Build.props 解析 WinCanvasVersion'; exit 1 }
           Write-Host "安装包版本 = $version"
-          & iscc "/DSourceDir=publish-out" "/DMyAppVersion=$version" installer\WinCanvas.iss
 
-      - name: 上传发布产物
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host "镜像内未找到 ISCC，用 choco 安装 Inno Setup 6"
+            choco install innosetup --no-progress -y | Out-Null
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { Write-Error 'Inno Setup 不可用（既不在镜像里也没装上）'; exit 1 }
+
+          & $iscc "/DSourceDir=publish-out" "/DMyAppVersion=$version" installer\WinCanvas.iss
+          if ($LASTEXITCODE -ne 0) { Write-Error "ISCC 退出码 $LASTEXITCODE"; exit 1 }
+          "setup_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: 打包便携版 zip
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
-        with:
-          name: wincanvas-release
-          path: |
-            publish-out
-            installer/Output/*.exe
-          if-no-files-found: warn
+        shell: pwsh
+        run: |
+          $version = "${{ steps.iscc.outputs.setup_version }}"
+          if (-not $version) {
+            $props = Get-Content Directory.Build.props -Raw
+            $version = [regex]::Match($props, '<WinCanvasVersion>([^<]+)</WinCanvasVersion>').Groups[1].Value
+          }
+          # 便携版的目录名要带版本：解压出来是 WinCanvas-v<版本>-win-x64 而不是 publish-out
+          $stage = "WinCanvas-v$version-win-x64"
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          Copy-Item publish-out $stage -Recurse
+          Compress-Archive -Path $stage -DestinationPath "WinCanvas-v$version-win-x64-portable.zip" -CompressionLevel Optimal
+          Get-Item "WinCanvas-v$version-win-x64-portable.zip" | ForEach-Object {
+            Write-Host ("便携版 zip = {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB))
+          }
+
+      - name: 发布 GitHub Release（挂 setup + 便携版两个资产）
+        # 幂等：release 已存在就复用（不覆盖标题与正文，只同步资产），
+        # 同名资产先删再传，重跑工作流不会堆出 setup(1).exe 这种垃圾。
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $api = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
+
+          try {
+            $rel = Invoke-RestMethod -Method Post -Uri "$api/releases" -Headers $headers -Body (@{
+              tag_name   = $tag
+              name       = "WinCanvas $tag"
+              draft      = $false
+              prerelease = $false
+            } | ConvertTo-Json)
+            Write-Host "已创建 release：$($rel.html_url)"
+          } catch {
+            if ($_.Exception.Response.StatusCode.value__ -ne 422) { throw }
+            $rel = Invoke-RestMethod -Uri "$api/releases/tags/$tag" -Headers $headers
+            Write-Host "release 已存在，复用：$($rel.html_url)"
+          }
+
+          $assets = @(Get-ChildItem 'installer/Output/WinCanvas-setup-*.exe') +
+                    @(Get-ChildItem 'WinCanvas-v*-win-x64-portable.zip')
+          if ($assets.Count -eq 0) { Write-Error '没有可上传的发布资产'; exit 1 }
+
+          foreach ($file in $assets) {
+            $existing = Invoke-RestMethod -Uri "$api/releases/$($rel.id)/assets" -Headers $headers
+            foreach ($a in $existing) {
+              if ($a.name -eq $file.Name) {
+                Invoke-RestMethod -Method Delete -Uri "$api/releases/assets/$($a.id)" -Headers $headers | Out-Null
+              }
+            }
+            Write-Host ("上传 {0}（{1:N1} MB）" -f $file.Name, ($file.Length / 1MB))
+            Invoke-RestMethod -Method Post `
+              -Uri "https://uploads.github.com/repos/$env:GITHUB_REPOSITORY/releases/$($rel.id)/assets?name=$([uri]::EscapeDataString($file.Name))" `
+              -Headers $headers -ContentType 'application/octet-stream' -InFile $file.FullName | Out-Null
+          }
 
   # ---- 需要真实桌面会话的用例 ----
   # 单独成 job 且【不阻断】：这批用例创建真窗口、走真 Win32 调用
