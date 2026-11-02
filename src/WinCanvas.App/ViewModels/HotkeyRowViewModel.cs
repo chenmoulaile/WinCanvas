@@ -37,19 +37,19 @@ public sealed partial class HotkeyRowViewModel : ObservableObject
     /// 由 <see cref="CommitCapture"/> 与外部重算时更新。
     /// </summary>
     [ObservableProperty]
-    private string _comboText = "未设置";
+    public partial string ComboText { get; set; } = "未设置";
 
     /// <summary>本行是否正在等待用户按键（进入捕获态时按钮文案变「请按下组合键…」）。</summary>
     [ObservableProperty]
-    private bool _isCapturing;
+    public partial bool IsCapturing { get; set; }
 
     /// <summary>是否启用该热键。</summary>
     [ObservableProperty]
-    private bool _enabled = true;
+    public partial bool Enabled { get; set; } = true;
 
     /// <summary>注册失败 / 校验失败的原因；非空时界面标红并显示。</summary>
     [ObservableProperty]
-    private string? _error;
+    public partial string? Error { get; set; }
 
     /// <summary>错误文本的可见性（XAML 不能直接绑 string? 判空，这里代劳）。</summary>
     public Visibility ErrorVisibility =>
@@ -78,8 +78,8 @@ public sealed partial class HotkeyRowViewModel : ObservableObject
 
         CaptureCommand = new RelayCommand(() => _capture(this));
 
-        _comboText = HotkeyTable.Format(binding);
-        _enabled = binding.Enabled;
+        ComboText = HotkeyTable.Format(binding);
+        Enabled = binding.Enabled;
     }
 
     /// <summary>

@@ -53,15 +53,15 @@ public partial class MainViewModel
 
     /// <summary>是否有热键正在等待用户按键（界面据此显示提示条）。</summary>
     [ObservableProperty]
-    private bool _isCapturingHotkey;
+    public partial bool IsCapturingHotkey { get; set; }
 
     /// <summary>快捷键区底部的状态文本（注册结果、冲突数量等）。</summary>
     [ObservableProperty]
-    private string _hotkeyStatusText = "尚未应用。";
+    public partial string HotkeyStatusText { get; set; } = "尚未应用。";
 
     /// <summary>壁纸渲染是否被用户暂停（托盘菜单与热键共用此状态）。</summary>
     [ObservableProperty]
-    private bool _isWallpaperPaused;
+    public partial bool IsWallpaperPaused { get; set; }
 
     /// <summary>
     /// 建立应用外壳：隐藏消息窗口 → 托盘图标 → 热键注册。
@@ -105,7 +105,7 @@ public partial class MainViewModel
             // 菜单文案要反映实时状态，这几个委托由服务层在泵线程上同步调用，
             // 只读布尔字段（写入都在 UI 线程 + 属性变更通知），不做跨线程界面访问
             _tray.IsMainWindowVisible = () => _isMainWindowVisible?.Invoke() ?? true;
-            _tray.IsWallpaperPaused = () => _isWallpaperPaused;
+            _tray.IsWallpaperPaused = () => IsWallpaperPaused;
             _tray.IsWinTipsEnabled = () => _services.WinTips.IsEnabled;
         }
         else
@@ -154,7 +154,7 @@ public partial class MainViewModel
             HotkeyRows.Add(new HotkeyRowViewModel(action, label, description, binding, OnRowChanged, BeginCapture));
         }
 
-        _hotkeyStatusText = $"共 {bindings.Count(b => b.Enabled && b.VirtualKey != 0)} 条热键待注册。";
+        HotkeyStatusText = $"共 {bindings.Count(b => b.Enabled && b.VirtualKey != 0)} 条热键待注册。";
     }
 
     /// <summary>某一行的绑定/开关变了：写回配置并重新注册热键。</summary>
@@ -226,7 +226,7 @@ public partial class MainViewModel
 
         if (problem != null)
         {
-            _hotkeyStatusText = $"未接受：{problem}";
+            HotkeyStatusText = $"未接受：{problem}";
             return false;
         }
 
@@ -242,7 +242,7 @@ public partial class MainViewModel
         var hotkeys = _hotkeys;
         if (hotkeys == null)
         {
-            _hotkeyStatusText = "热键线程未建立，快捷键不可用。";
+            HotkeyStatusText = "热键线程未建立，快捷键不可用。";
             return;
         }
 
@@ -255,7 +255,7 @@ public partial class MainViewModel
 
         if (result.AllOk)
         {
-            _hotkeyStatusText = $"已注册 {hotkeys.ActiveCount} 个全局快捷键。";
+            HotkeyStatusText = $"已注册 {hotkeys.ActiveCount} 个全局快捷键。";
             return;
         }
 
@@ -268,7 +268,7 @@ public partial class MainViewModel
             }
         }
 
-        _hotkeyStatusText = $"已注册 {hotkeys.ActiveCount} 个，{result.Failures.Count} 个未生效（见下方红色提示）。";
+        HotkeyStatusText = $"已注册 {hotkeys.ActiveCount} 个，{result.Failures.Count} 个未生效（见下方红色提示）。";
         ShowInfo(InfoBarSeverity.Warning,
             $"{result.Failures.Count} 个全局快捷键注册失败：{result.Failures[0].Reason}");
     }
@@ -452,19 +452,19 @@ public partial class MainViewModel
     /// <summary>暂停 / 恢复全部壁纸渲染（托盘菜单与全局热键共用）。</summary>
     private void ToggleWallpaperPause()
     {
-        if (_isWallpaperPaused)
+        if (IsWallpaperPaused)
         {
             _services.Wallpaper.ResumeRendering();
-            _isWallpaperPaused = false;
+            IsWallpaperPaused = false;
         }
         else
         {
             _services.Wallpaper.PauseRendering();
-            _isWallpaperPaused = true;
+            IsWallpaperPaused = true;
         }
 
         OnPropertyChanged(nameof(IsWallpaperPaused));
-        WallpaperStatusText = _isWallpaperPaused
+        WallpaperStatusText = IsWallpaperPaused
             ? "壁纸渲染已暂停（省电 / 让出 GPU）。"
             : "壁纸渲染已恢复。";
     }

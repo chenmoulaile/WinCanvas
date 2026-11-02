@@ -59,16 +59,16 @@ public partial class WindowItemViewModel : ObservableObject
     public string HwndText { get; }
 
     [ObservableProperty]
-    private bool _isTopmost;
+    public partial bool IsTopmost { get; set; }
 
     [ObservableProperty]
-    private byte _alpha = 255;
+    public partial byte Alpha { get; set; } = 255;
 
     [ObservableProperty]
-    private bool _clickThrough;
+    public partial bool ClickThrough { get; set; }
 
     [ObservableProperty]
-    private CornerPreference _corner = CornerPreference.Default;
+    public partial CornerPreference Corner { get; set; } = CornerPreference.Default;
 
     public WindowItemViewModel(
         WindowInfo info,

@@ -94,7 +94,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _pickWallpaperFile = pickWallpaperFile;
         _getOwnHwnd = getOwnHwnd;
         _fpsMonitor = new FpsMonitor(dispatcherQueue);
-        _selectedCorner = CornerOptions[0];
+        SelectedCorner = CornerOptions[0];
 
         // WinTips：诊断日志与本地回退提示 → InfoBar
         //（是否真正弹出浮窗 / 抛回退事件受「WinTips 提示」开关控制，见 OnWinTipsEnabledChanged）
@@ -142,16 +142,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// 空串 = 显示全部。
     /// </summary>
     [ObservableProperty]
-    private string _windowFilter = string.Empty;
+    public partial string WindowFilter { get; set; } = string.Empty;
 
     /// <summary>过滤后的条目数（界面显示「N / M」用）。</summary>
     [ObservableProperty]
-    private int _filteredCount;
+    public partial int FilteredCount { get; set; }
 
     /// <summary>按当前关键字重建过滤视图。</summary>
     private void RebuildFiltered()
     {
-        string keyword = _windowFilter?.Trim() ?? string.Empty;
+        string keyword = WindowFilter?.Trim() ?? string.Empty;
 
         FilteredWindows.Clear();
 
@@ -219,10 +219,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // ---------- 列表 / 选中 ----------
 
     [ObservableProperty]
-    private WindowItemViewModel? _selected;
+    public partial WindowItemViewModel? Selected { get; set; }
 
     [ObservableProperty]
-    private bool _isRefreshing;
+    public partial bool IsRefreshing { get; set; }
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ClearWallpaperCommand))]
@@ -232,25 +232,25 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // 防止换选时把旧控件值误写进新选中项） ----------
 
     [ObservableProperty]
-    private string _selectedDisplayName = "（未选择窗口）";
+    public partial string SelectedDisplayName { get; set; } = "（未选择窗口）";
 
     [ObservableProperty]
-    private string _selectedSubtitle = "在左侧列表选择一个窗口后，可在此调整其属性。";
+    public partial string SelectedSubtitle { get; set; } = "在左侧列表选择一个窗口后，可在此调整其属性。";
 
     [ObservableProperty]
-    private string _selectedHwndText = string.Empty;
+    public partial string SelectedHwndText { get; set; } = string.Empty;
 
     [ObservableProperty]
-    private bool _selectedIsTopmost;
+    public partial bool SelectedIsTopmost { get; set; }
 
     [ObservableProperty]
-    private double _selectedAlpha = 255;
+    public partial double SelectedAlpha { get; set; } = 255;
 
     [ObservableProperty]
-    private bool _selectedClickThrough;
+    public partial bool SelectedClickThrough { get; set; }
 
     [ObservableProperty]
-    private CornerOption _selectedCorner;
+    public partial CornerOption SelectedCorner { get; set; }
 
     /// <summary>透明度滑块的数值展示（0~255）。</summary>
     public string SelectedAlphaText => $"{SelectedAlpha:0} / 255";
@@ -258,17 +258,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // ---------- 壁纸 ----------
 
     [ObservableProperty]
-    private string _wallpaperFilePathText = "（未选择）";
+    public partial string WallpaperFilePathText { get; set; } = "（未选择）";
 
     [ObservableProperty]
-    private bool _isWallpaperLoading;
+    public partial bool IsWallpaperLoading { get; set; }
 
     /// <summary>壁纸加载进度（0~100，ProgressBar 用）。</summary>
     [ObservableProperty]
-    private double _wallpaperProgress;
+    public partial double WallpaperProgress { get; set; }
 
     [ObservableProperty]
-    private string _wallpaperStatusText = "选择图片 / 视频 / .pkg 文件作为所选窗口的背景。";
+    public partial string WallpaperStatusText { get; set; } = "选择图片 / 视频 / .pkg 文件作为所选窗口的背景。";
 
     // ---------- 设置 ----------
 
@@ -318,24 +318,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [ObservableProperty]
-    private bool _winTipsEnabled;
+    public partial bool WinTipsEnabled { get; set; }
 
     [ObservableProperty]
-    private bool _fpsOverlayEnabled;
+    public partial bool FpsOverlayEnabled { get; set; }
 
     [ObservableProperty]
-    private string _fpsText = "-- FPS";
+    public partial string FpsText { get; set; } = "-- FPS";
 
     // ---------- InfoBar 提示 ----------
 
     [ObservableProperty]
-    private bool _isInfoBarOpen;
+    public partial bool IsInfoBarOpen { get; set; }
 
     [ObservableProperty]
-    private string _infoBarMessage = string.Empty;
+    public partial string InfoBarMessage { get; set; } = string.Empty;
 
     [ObservableProperty]
-    private InfoBarSeverity _infoBarSeverity = InfoBarSeverity.Informational;
+    public partial InfoBarSeverity InfoBarSeverity { get; set; } = InfoBarSeverity.Informational;
 
     // ---------- 可见性（供 x:Bind 使用） ----------
 
