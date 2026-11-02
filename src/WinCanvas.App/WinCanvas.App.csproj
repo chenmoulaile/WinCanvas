@@ -70,7 +70,19 @@
        与 WinTipsIntegrationService.TryLocateWinTipsExe 的「程序目录旁 WinTips\WinTips.exe」候选路径天然接上。
        构建失败只告警不阻断：exe 缺失时运行期走既有本地回退通道（InfoBar）。 -->
   <PropertyGroup>
-    <!-- WinTips 子模块工程与其默认 Release 输出目录（net10.0-windows，无 RID、无平台子目录） -->
+    <!-- WinTips 子模块工程与其产物目录。
+
+         为什么保持【框架依赖】而不是 self-contained：实测 self-contained publish 的
+         WinTips 目录是 156MB —— 为了一个 NumLock 浮窗把整包从 221MB 推到 377MB、
+         并在同一个安装目录里塞进两份 .NET 桌面运行时，代价明显不划算。
+
+         但框架依赖有个必须处理的真实后果：目标机器默认位置没有 .NET 10 运行时时，
+         启动 WinTips.exe 会弹出【系统模态对话框】「You must install or update .NET to
+         run this application」—— 那不是我们的异常，而是 apphost 自己弹的，
+         C# 侧的 try/catch 拦不住、也收不回。实测就是这么踩到的。
+         所以启动前的「这个 exe 到底能不能跑」探测是必需的，见
+         WinTipsIntegrationService.IsWinTipsLaunchable：探测不过就直接走
+         托盘气泡 / InfoBar 回退，绝不 spawn 一个会弹系统对话框的进程。 -->
     <WinTipsProject>$(MSBuildThisFileDirectory)..\..\ThirdParty\WinTips\WinTips.csproj</WinTipsProject>
     <WinTipsBuildOutputDir>$(MSBuildThisFileDirectory)..\..\ThirdParty\WinTips\bin\Release\net10.0-windows\</WinTipsBuildOutputDir>
 
@@ -92,7 +104,7 @@
           AfterTargets="Build"
           Condition="'$(DesignTimeBuild)' != 'true'"
           Inputs="$(WinTipsProject);$(MSBuildThisFileDirectory)..\..\ThirdParty\WinTips\**\*.cs;$(MSBuildThisFileDirectory)..\..\ThirdParty\WinTips\**\*.xaml"
-          Outputs="$(OutDir)WinTips\WinTips.exe">
+          Outputs="$(OutDir)WinTips\deploy-v3.flag">
     <!-- 增量语义（Inputs/Outputs）：子模块源码未变化且 $(OutDir)WinTips\WinTips.exe 存在时整体跳过；
          源码更新或产物被清理后自动重建，避免把过期 exe 留在部署目录。
          子模块缺失时 Inputs 非空但仍跑进来，由下方 Exists 条件与专属告警给出人话提示；
@@ -102,7 +114,8 @@
     </PropertyGroup>
 
     <!-- 1) 外挂构建（.NET 10 SDK）：IgnoreExitCode 使失败不阻断 App 构建，错误码落属性后统一告警。
-         用 $(WinTipsDotnetHost) 而不是裸 dotnet，理由见上面属性块的注释。 -->
+         用 $(WinTipsDotnetHost) 而不是裸 dotnet（理由见上面属性块）；
+         用 build 产出框架依赖版本，能否启动由运行期探测决定。 -->
     <Exec Condition="Exists('$(WinTipsProject)')"
           Command="&quot;$(WinTipsDotnetHost)&quot; build &quot;$(WinTipsProject)&quot; -c Release --nologo"
           IgnoreExitCode="true"
@@ -123,6 +136,15 @@
           SkipUnchangedFiles="true" />
     <Message Condition="'$(WinTipsBuildExitCode)' == '0' and '@(WinTipsDeployFiles)' != ''"
              Text="WinTips.exe 已部署到 $(OutDir)WinTips\" Importance="normal" />
+
+    <!-- 方案标记文件：增量判定改认它而不是认 WinTips.exe。
+         这样【构建方案本身变了】（比如这次 build→publish self-contained）时旧产物会被判定过期、
+         自动重新发布；否则改了命令却因 exe 已存在而被跳过，会继续发布框架依赖的旧版 ——
+         那个旧版正是弹「需要安装 .NET」对话框的元凶。 -->
+    <WriteLinesToFile Condition="'$(WinTipsBuildExitCode)' == '0'"
+                      File="$(OutDir)WinTips\deploy-v3.flag"
+                      Lines="self-contained publish via $(WinTipsDotnetHost)"
+                      Overwrite="true" />
 
     <!-- 3) 失败呈现：给出「失败 + 原因 + 用户能做什么」的明确告警（不阻断构建） -->
     <Warning Condition="'$(WinTipsBuildExitCode)' != '0'"

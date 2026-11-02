@@ -27,7 +27,7 @@ public partial class MainViewModel
 
     /// <summary>正在检索（按钮禁用 + 进度环）。</summary>
     [ObservableProperty]
-    private bool _isLibraryScanning;
+    public partial bool IsLibraryScanning { get; set; }
 
     /// <summary>检索按钮是否可点（= 不在检索中）。用正向语义避免在 XAML 里做布尔取反。</summary>
     public bool CanScanLibrary => !IsLibraryScanning;
@@ -39,15 +39,15 @@ public partial class MainViewModel
 
     /// <summary>检索结果说明（条目数、耗时、根目录数）。</summary>
     [ObservableProperty]
-    private string _libraryStatusText = "尚未检索。可点「检索壁纸库」，或先添加扫描目录。";
+    public partial string LibraryStatusText { get; set; } = "尚未检索。可点「检索壁纸库」，或先添加扫描目录。";
 
     /// <summary>当前生效的扫描根（换行拼接，供界面显示）。</summary>
     [ObservableProperty]
-    private string _libraryRootsText = "（未配置，将使用自动探测结果）";
+    public partial string LibraryRootsText { get; set; } = "（未配置，将使用自动探测结果）";
 
     /// <summary>库面板的过滤关键字。</summary>
     [ObservableProperty]
-    private string _libraryFilter = string.Empty;
+    public partial string LibraryFilter { get; set; } = string.Empty;
 
     /// <summary>过滤后的显示集合（面板绑定的是这一份）。</summary>
     public ObservableCollection<WallpaperLibraryItemViewModel> FilteredLibraryItems { get; } = new();
@@ -57,15 +57,23 @@ public partial class MainViewModel
     /// 变更时立即作用到已在播的会话（由服务层负责），并持久化。
     /// </summary>
     [ObservableProperty]
-    private bool _wallpaperAudioEnabled;
+    public partial bool WallpaperAudioEnabled { get; set; }
 
     /// <summary>声音关闭时的说明文案（含音频线索的壁纸需要被解释，否则像 bug）。</summary>
-    public string AudioHintText => _wallpaperAudioEnabled
+    public string AudioHintText => WallpaperAudioEnabled
         ? "壁纸声音已开启：带音轨的视频壁纸会外放（音量 60%，可在系统音量合成器单独调）。"
         : "壁纸声音已关闭（默认）。带音乐的视频壁纸不会出声 —— 需要听就在下方打开开关。";
 
+    /// <summary>启动回填时抑制 setter 副作用的标志。</summary>
+    private bool _suppressAudioSync;
+
     partial void OnWallpaperAudioEnabledChanged(bool value)
     {
+        if (_suppressAudioSync)
+        {
+            return; // 回填：服务侧的设置由 InitializeWallpaperLibrary 统一做一次
+        }
+
         _services.Wallpaper.AudioEnabled = value;
         _appConfig.WallpaperAudioEnabled = value;
         PersistConfig();
@@ -83,8 +91,11 @@ public partial class MainViewModel
     /// </summary>
     internal void InitializeWallpaperLibrary()
     {
-        // 直接写字段而非属性：启动回填不该触发「持久化 + 重设播放器」这条写路径
-        _wallpaperAudioEnabled = _appConfig.WallpaperAudioEnabled;
+        // 回填走抑制标志：启动阶段是「恢复上次选择」，不该触发
+        // 「写回配置 + 重设所有播放器」这条写路径（还会多一条提示文案变更通知）
+        _suppressAudioSync = true;
+        WallpaperAudioEnabled = _appConfig.WallpaperAudioEnabled;
+        _suppressAudioSync = false;
         _services.Wallpaper.AudioEnabled = _appConfig.WallpaperAudioEnabled;
         OnPropertyChanged(nameof(WallpaperAudioEnabled));
         OnPropertyChanged(nameof(AudioHintText));
@@ -101,7 +112,7 @@ public partial class MainViewModel
     private void RefreshRootsText()
     {
         List<string> roots = EffectiveRoots();
-        _libraryRootsText = roots.Count == 0
+        LibraryRootsText = roots.Count == 0
             ? "（未配置，自动探测也没找到 —— 请手动添加 Wallpaper Engine 的 myprojects 目录）"
             : string.Join(Environment.NewLine, roots);
         OnPropertyChanged(nameof(LibraryRootsText));
@@ -140,12 +151,12 @@ public partial class MainViewModel
     [RelayCommand]
     private async Task ScanLibraryAsync()
     {
-        if (_isLibraryScanning)
+        if (IsLibraryScanning)
         {
             return; // 防重入：检索虽快，大库 + 网络盘仍可能几秒，连点会排多条扫描
         }
 
-        _isLibraryScanning = true;
+        IsLibraryScanning = true;
         OnPropertyChanged(nameof(IsLibraryScanning));
 
         try
@@ -158,24 +169,24 @@ public partial class MainViewModel
             LibraryItems.Clear();
             foreach (WallpaperLibraryEntry entry in entries)
             {
-                LibraryItems.Add(new WallpaperLibraryItemViewModel(entry));
+                LibraryItems.Add(new WallpaperLibraryItemViewModel(entry, _dispatcherQueue));
             }
 
             RebuildFilteredLibrary();
 
             int usable = LibraryItems.Count(i => i.IsUsable);
-            _libraryStatusText = roots.Count == 0
+            LibraryStatusText = roots.Count == 0
                 ? $"没有可扫描的目录：请点「添加目录」指定 Wallpaper Engine 的 projects/myprojects。"
                 : $"检索到 {LibraryItems.Count} 项（可挂接 {usable}），来自 {roots.Count} 个目录。";
         }
         catch (Exception ex)
         {
-            _libraryStatusText = $"检索失败：{ex.Message}";
+            LibraryStatusText = $"检索失败：{ex.Message}";
             ShowInfo(InfoBarSeverity.Error, $"壁纸库检索失败：{ex.Message}");
         }
         finally
         {
-            _isLibraryScanning = false;
+            IsLibraryScanning = false;
             OnPropertyChanged(nameof(IsLibraryScanning));
         }
     }
@@ -183,7 +194,7 @@ public partial class MainViewModel
     /// <summary>重建库面板的过滤视图。</summary>
     private void RebuildFilteredLibrary()
     {
-        string keyword = _libraryFilter?.Trim() ?? string.Empty;
+        string keyword = LibraryFilter?.Trim() ?? string.Empty;
         FilteredLibraryItems.Clear();
 
         foreach (WallpaperLibraryItemViewModel item in LibraryItems)
@@ -215,7 +226,7 @@ public partial class MainViewModel
         if (_appConfig.WallpaperLibraryRoots.Any(
                 r => string.Equals(r.Trim().Trim('"'), normalized, StringComparison.OrdinalIgnoreCase)))
         {
-            _libraryStatusText = $"该目录已在扫描列表里：{normalized}";
+            LibraryStatusText = $"该目录已在扫描列表里：{normalized}";
             return;
         }
 

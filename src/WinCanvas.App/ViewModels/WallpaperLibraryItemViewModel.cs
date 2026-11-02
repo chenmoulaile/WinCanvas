@@ -1,4 +1,8 @@
 using System.IO;
+using System.Threading;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Processing;
+using System.Runtime.InteropServices.WindowsRuntime;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.UI.Xaml.Media.Imaging;
 using WinCanvas.Wallpaper;
@@ -20,9 +24,13 @@ public sealed partial class WallpaperLibraryItemViewModel : ObservableObject
 {
     private readonly WallpaperLibraryEntry _entry;
 
-    public WallpaperLibraryItemViewModel(WallpaperLibraryEntry entry)
+    /// <summary>UI 调度队列：缩略图在线程池解码完成后封送回这里赋值。</summary>
+    private readonly Microsoft.UI.Dispatching.DispatcherQueue? _dispatcher;
+
+    public WallpaperLibraryItemViewModel(WallpaperLibraryEntry entry, Microsoft.UI.Dispatching.DispatcherQueue? dispatcher = null)
     {
         _entry = entry;
+        _dispatcher = dispatcher;
     }
 
     /// <summary>传给壁纸服务的挂接路径（项目目录或媒体文件）。</summary>
@@ -66,40 +74,130 @@ public sealed partial class WallpaperLibraryItemViewModel : ObservableObject
     }
 
     [ObservableProperty]
-    private Microsoft.UI.Xaml.Visibility _previewVisibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+    public partial Microsoft.UI.Xaml.Visibility PreviewVisibility { get; set; } = Microsoft.UI.Xaml.Visibility.Collapsed;
 
     /// <summary>
-    /// 缩略图。延迟创建：面板里条目上百个，构造时全解码会在打开界面的一瞬间
-    /// 把几十上百张图同时推进内存；改由 View 在元素加载时调 <see cref="EnsurePreview"/>。
+    /// 缩略图。由 <see cref="EnsurePreview"/> 延迟生成（线程池解码 + 封送回 UI）。
     /// </summary>
     public BitmapImage? Preview { get; private set; }
 
     /// <summary>
-    /// 按需加载缩略图（由 View 的 Loaded 事件驱动，只处理已滚进视口的条目）。
-    /// 幂等。
+    /// 按需生成缩略图（由 View 的 Loaded 事件驱动，只处理已滚进视口的条目）。幂等。
+    ///
+    /// 为什么不直接把 <c>BitmapImage.UriSource</c> 指到 preview.gif：
+    /// Wallpaper Engine 的预览图【绝大多数是动画 GIF，而且是源分辨率】
+    /// （实测单个 preview.gif 常见 0.5~3MB）。WinUI 的 BitmapImage 会把 GIF
+    /// 动画解码并驻留全部帧，<c>DecodePixelWidth</c> 只缩最终显示尺寸、
+    /// 不缩解码峰值 —— 实机测得一屏十几条缩略图把私有内存从 48MB 顶到 247MB，
+    /// 等于用一个面板把程序基础内存翻了五倍。
+    ///
+    /// 现在的做法：交给 ImageSharp 解码成首帧 → 立刻降到 120px → 编码 PNG →
+    /// 原图马上 Dispose；并且用 <see cref="_thumbnailGate"/> 【串行化】，
+    /// 同一时刻只有一张预览处于解码峰值。
+    /// （ImageSharp 2.1 的 GifDecoder.MaxFrames 没有公开的 Load 入口可用，
+    ///   所以这里靠「串行 + 尽早降采样」控峰值，而不是靠限制帧数。）
     /// </summary>
     public void EnsurePreview()
     {
-        if (Preview != null || _entry.PreviewPath == null || !File.Exists(_entry.PreviewPath))
+        if (_previewStarted || _entry.PreviewPath == null || !File.Exists(_entry.PreviewPath))
         {
             return;
         }
 
+        _previewStarted = true;
+        string path = _entry.PreviewPath;
+        Microsoft.UI.Dispatching.DispatcherQueue? dispatcher = _dispatcher;
+
+        _ = System.Threading.Tasks.Task.Run(async () =>
+        {
+            byte[]? png;
+            await _thumbnailGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                png = TryBuildThumbnail(path);
+            }
+            finally
+            {
+                _thumbnailGate.Release();
+            }
+
+            if (png == null)
+            {
+                return; // 解码失败：保持占位，条目本身仍然可选
+            }
+
+            dispatcher?.TryEnqueue(async () =>
+            {
+                try
+                {
+                    var bitmap = new BitmapImage();
+                    using var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+                    await stream.WriteAsync(png.AsBuffer());
+                    stream.Seek(0);
+                    await bitmap.SetSourceAsync(stream);
+
+                    Preview = bitmap;
+                    PreviewVisibility = Microsoft.UI.Xaml.Visibility.Visible;
+                    OnPropertyChanged(nameof(Preview));
+                }
+                catch (Exception)
+                {
+                    // 缩略图赋值失败不影响条目可选
+                }
+            });
+        });
+    }
+
+    /// <summary>
+    /// 生成 120px 宽的静态首帧 PNG。任何异常都返回 null ——
+    /// 缩略图是辅助信息，不能反噬「这张壁纸能不能挂」。
+    /// </summary>
+    private static byte[]? TryBuildThumbnail(string path)
+    {
         try
         {
-            Preview = new BitmapImage
-            {
-                DecodePixelWidth = 120,
-                UriSource = new Uri(_entry.PreviewPath),
-            };
-            PreviewVisibility = Microsoft.UI.Xaml.Visibility.Visible;
-            OnPropertyChanged(nameof(Preview));
+            using Image image = Image.Load(path);
+            return EncodeThumbnail(image);
         }
         catch (Exception)
         {
-            // 预览图解不开：保持占位可见性为 Collapsed，条目本身仍然可选
+            return null;
         }
     }
+
+    private static byte[]? EncodeThumbnail(Image image)
+    {
+        using (image)
+        {
+            try
+            {
+                if (image.Width > ThumbnailWidth)
+                {
+                    // 先缩放再编码：让驻留时间极短，也保证产出的 PNG 只有几 KB
+                    image.Mutate(x => x.Resize(ThumbnailWidth, 0));
+                }
+
+                using var ms = new MemoryStream();
+                image.SaveAsPng(ms);
+                return ms.ToArray();
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+    }
+
+    /// <summary>缩略图宽度（面板格子 150px，120 足够）。</summary>
+    private const int ThumbnailWidth = 120;
+
+    /// <summary>
+    /// 缩略图解码串行闸：把「同时处于解码峰值的预览数」压到 1。
+    /// static：所有条目共享，因为峰值是进程级的内存问题，不是单条目问题。
+    /// </summary>
+    private static readonly SemaphoreSlim _thumbnailGate = new(1, 1);
+
+    private bool _previewStarted;
 
     private static string KindOfProject(string directory)
     {

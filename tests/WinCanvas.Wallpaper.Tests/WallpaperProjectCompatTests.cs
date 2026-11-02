@@ -353,6 +353,62 @@ public sealed class WallpaperProjectCompatTests : IDisposable
         Assert.Empty(entries);
     }
 
+    // ---------- 声音开关（默认静音） ----------
+
+    [Fact]
+    public void 视频加载_默认不传参数_必须静音()
+    {
+        // 这条守的是【默认态】：壁纸是背景，默认外放会在用户不知情时突然出声。
+        // 迁移前 IsMuted 是硬编码 true（根本没有开关能改变），现在改成参数化，
+        // 默认值必须仍然是静音。
+        string file = Path.Combine(_root, "clip.mp4");
+        File.WriteAllBytes(file, new byte[] { 0, 0, 0, 1 });
+
+        var source = VideoWallpaperLoader.Load(file);
+
+        Assert.NotNull(source.Player);
+        Assert.True(source.Player!.IsMuted);
+        Assert.Equal(0d, source.Player.Volume);
+        Assert.True(source.HasAudioTrack);
+        source.Dispose();
+    }
+
+    [Fact]
+    public void 视频加载_显式允许发声_取消静音并给一个非满音量()
+    {
+        string file = Path.Combine(_root, "clip2.mp4");
+        File.WriteAllBytes(file, new byte[] { 0, 0, 0, 1 });
+
+        var source = VideoWallpaperLoader.Load(file, audioEnabled: true);
+
+        Assert.NotNull(source.Player);
+        Assert.False(source.Player!.IsMuted);
+        // 刻意不满值 1.0：背景不应盖过前台应用的音频
+        Assert.Equal(VideoWallpaperLoader.DefaultPlaybackVolume, source.Player.Volume);
+        Assert.True(VideoWallpaperLoader.DefaultPlaybackVolume < 1.0);
+        Assert.True(VideoWallpaperLoader.DefaultPlaybackVolume > 0.0);
+        source.Dispose();
+    }
+
+    [Fact]
+    public void 项目目录加载_视频项目继承声音设置()
+    {
+        // 项目路径与直接选文件必须走同一套声音逻辑，否则「从库里选」和
+        // 「从对话框选」会出现同一个壁纸两种音量表现
+        string media = "带音乐.mp4";
+        string dir = MakeProject("audioproj", $$"""
+        { "title" : "audio proj", "type" : "video", "file" : "{{media}}" }
+        """, media);
+
+        var muted = WallpaperProjectLoader.Load(dir, audioEnabled: false);
+        Assert.True(muted.Player!.IsMuted);
+        muted.Dispose();
+
+        var audible = WallpaperProjectLoader.Load(dir, audioEnabled: true);
+        Assert.False(audible.Player!.IsMuted);
+        audible.Dispose();
+    }
+
     /// <summary>写一个 1x1 的最小合法 PNG（够 ImageWallpaperLoader 解码）。</summary>
     private static void WriteMinimalPng(string path)
     {

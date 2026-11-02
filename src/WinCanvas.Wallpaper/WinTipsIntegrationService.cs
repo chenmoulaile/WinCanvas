@@ -32,8 +32,36 @@ public sealed class WinTipsIntegrationService : IStatusNotifier
     /// <summary>诊断信息（WinTips 调用结果），供日志/UI 层订阅。</summary>
     public event Action<string>? LogMessage;
 
-    /// <summary>是否已找到可调用的 WinTips.exe。</summary>
-    public bool IsWinTipsAvailable => TryLocateWinTipsExe() != null;
+    /// <summary>
+    /// 是否有【可用】的 WinTips 浮窗通道 —— 不只是「文件存在」，
+    /// 还必须通过运行时可启动性探测（否则启动会弹系统对话框）。
+    /// </summary>
+    public bool IsWinTipsAvailable
+    {
+        get
+        {
+            var exe = TryLocateWinTipsExe();
+            return exe != null && WinTipsRuntimeProbe.IsLaunchable(exe, out _);
+        }
+    }
+
+    /// <summary>
+    /// WinTips 不可用的原因（可用时为 null）。供设置区把「为什么没浮窗」讲清楚，
+    /// 而不是让用户以为功能坏了。
+    /// </summary>
+    public string? WinTipsUnavailableReason
+    {
+        get
+        {
+            var exe = TryLocateWinTipsExe();
+            if (exe == null)
+            {
+                return "未部署 WinTips.exe";
+            }
+
+            return WinTipsRuntimeProbe.IsLaunchable(exe, out string? reason) ? null : reason;
+        }
+    }
 
     /// <summary>
     /// 是否允许对外弹出提示。对应主界面「WinTips 提示」开关：
@@ -58,6 +86,17 @@ public sealed class WinTipsIntegrationService : IStatusNotifier
             return;
 
         var exe = TryLocateWinTipsExe();
+
+        // 找到 exe ≠ 能安全启动它：框架依赖的 WinTips 在缺对应 .NET 运行时的机器上，
+        // 启动时由 apphost 弹【系统模态对话框】「需要安装 .NET」——
+        // 那个框 Process.Start 成功返回、try/catch 抓不到也关不掉。
+        // 所以必须先探测，探测不过直接走本地回退，绝不 spawn。
+        if (exe != null && !WinTipsRuntimeProbe.IsLaunchable(exe, out string? launchBlockReason))
+        {
+            LogMessage?.Invoke($"WinTips.exe 存在但不可安全启动：{launchBlockReason}。NumLock 提示走本地事件通道。");
+            NumLockTipRequested?.Invoke(isLocked);
+            return;
+        }
 
         if (exe != null)
         {

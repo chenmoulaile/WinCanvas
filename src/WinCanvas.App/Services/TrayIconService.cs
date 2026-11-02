@@ -181,6 +181,44 @@ internal sealed class TrayIconService : IDisposable
             tip.Length > 127 ? tip[..127] : tip, withIcon: false);
     }
 
+    /// <summary>
+    /// 弹一条托盘气泡通知（v0.3.0 新增）。
+    ///
+    /// 为什么需要：WinTips 浮窗不可用时，NumLock 提示原先只走 InfoBar ——
+    /// 而 InfoBar 在主窗口里，用户十有八九是把窗口收进托盘在用这个工具，
+    /// 于是「提示」等于没提示。托盘气泡不依赖主窗口可见，是这条链路上最合适的回退。
+    /// </summary>
+    /// <param name="title">气泡标题（≤63 字符）。</param>
+    /// <param name="text">气泡正文（≤255 字符）。</param>
+    internal void ShowBalloon(string title, string text)
+    {
+        if (!_added)
+        {
+            return; // 没有托盘图标就没有气泡载体：静默放弃（调用方另有 InfoBar 兜底）
+        }
+
+        var data = new ShellNativeMethods.NOTIFYICONDATA
+        {
+            cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<ShellNativeMethods.NOTIFYICONDATA>(),
+            hWnd = _window.Hwnd,
+            uID = _iconId,
+            uFlags = ShellNativeMethods.NIF_INFO | ShellNativeMethods.NIF_ICON,
+            hIcon = _hIcon,
+            szInfo = text.Length > 255 ? text[..255] : text,
+            szInfoTitle = title.Length > 63 ? title[..63] : title,
+            dwInfoFlags = ShellNativeMethods.NIIF_INFO,
+        };
+
+        try
+        {
+            ShellNativeMethods.Shell_NotifyIconW(ShellNativeMethods.NIM_MODIFY, ref data);
+        }
+        catch (Exception ex)
+        {
+            App.LogFatal(ex, "托盘气泡发送失败");
+        }
+    }
+
     /// <summary>左键抬起 / 双击 → 显示或隐藏主窗口。</summary>
     private void OnTrayMouseMessage(uint mouseMessage)
     {

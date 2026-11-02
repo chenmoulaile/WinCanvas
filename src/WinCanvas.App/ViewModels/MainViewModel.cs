@@ -104,7 +104,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _services.WinTips.LogMessage += message =>
             ShowInfo(InfoBarSeverity.Informational, $"WinTips：{message}");
         _services.WinTips.NumLockTipRequested += isLocked =>
-            ShowInfo(InfoBarSeverity.Informational, isLocked ? "NumLock 已锁定" : "NumLock 已解锁");
+            ReportNumLockFallback(isLocked);
 
         // 壁纸：服务上报（pkg 复杂场景降级提示、加载错误、A2 自动透明提示等）→ InfoBar
         //（工作线程触发，ShowInfo 内部封送）
@@ -597,13 +597,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 RestoreDiagnostics.Log($"恢复管线：hwnd=0x{hwnd:X} 无背景档案，属性恢复完成" +
                                        $"（单窗口 {Environment.TickCount64 - startedAt} ms）。");
             }
-            else if (!File.Exists(backgroundPath))
+            else if (!WallpaperFormats.IsAvailableBackgroundPath(backgroundPath))
             {
-                // 背景文件缺失：警告但【不清除档案】（用户可能临时移动文件后放回，规格 WP3 明确保留）
+                // 背景资源缺失：警告但【不清除档案】（用户可能临时移动文件后放回，规格 WP3 明确保留）。
+                // 判定必须走 IsAvailableBackgroundPath 而不是 File.Exists ——
+                // Wallpaper Engine 项目是【目录】，File.Exists 对目录恒为 false，
+                // 用目录挂的壁纸会在重启后全被误判成「文件已不存在」。
                 ShowInfo(InfoBarSeverity.Warning,
-                    $"背景文件已不存在：{backgroundPath}，档案保留；" +
-                    "请把文件放回原位置后重启应用，或重新为该窗口选择背景文件。");
-                RestoreDiagnostics.Log($"恢复管线：hwnd=0x{hwnd:X} 背景文件已不存在（{backgroundPath}），已警告且档案保留。");
+                    $"背景资源已不存在：{backgroundPath}，档案保留；" +
+                    "请把文件（或项目目录）放回原位置后重启应用，或重新为该窗口选择背景。");
+                RestoreDiagnostics.Log($"恢复管线：hwnd=0x{hwnd:X} 背景资源已不存在（{backgroundPath}），已警告且档案保留。");
             }
             else if (_services.Wallpaper.IsBackgroundActive(hwnd, backgroundPath))
             {

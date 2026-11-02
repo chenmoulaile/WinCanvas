@@ -130,7 +130,10 @@ public partial class MainViewModel
     {
         if (_hotkeys is null)
         {
-            return; // 外壳没起来（消息窗口创建失败）：界面仍可用，只是没有快捷键
+            // 这条分支是「快捷键整体失效」最隐蔽的原因：界面照样显示默认组合，
+            // 但一个都没注册，看上去像「功能没做」。不静默。
+            ConfigLog("热键初始化跳过：应用外壳（系统消息窗口）未建立，全局快捷键不可用。");
+            return;
         }
 
         BuildHotkeyRows();
@@ -247,6 +250,14 @@ public partial class MainViewModel
         }
 
         var result = await hotkeys.ApplyAsync(_appConfig.Hotkeys);
+
+        // 把注册结果落到诊断日志：热键「按了没反应」是这类工具最难归因的故障，
+        // 可能的原因至少有三层（外壳没起来 / 泵线程超时 / 组合被别的程序占用），
+        // 界面上虽有红字提示，但用户收进托盘后根本看不到 —— 日志是唯一的远程排障入口。
+        ConfigLog($"全局热键注册结果：成功 {hotkeys.ActiveCount} 条，失败 {result.Failures.Count} 条" +
+                  (result.Failures.Count == 0
+                      ? string.Empty
+                      : $"（{string.Join("；", result.Failures.Select(f => f.Reason))}）"));
 
         foreach (var row in HotkeyRows)
         {
@@ -515,6 +526,30 @@ public partial class MainViewModel
     private static void ConfigLog(string message)
     {
         App.LogFatal(null, message);
+    }
+
+    /// <summary>
+    /// WinTips 浮窗不可用时的 NumLock 提示回退（v0.3.0）。
+    ///
+    /// 优先【托盘气泡】：本工具的典型用法是主窗口收在托盘里，
+    /// 只发 InfoBar 等于「提示写在一个看不见的窗口上」。
+    /// 没有托盘（外壳建立失败）时才退回 InfoBar，保证总有一条通道能提示到。
+    /// </summary>
+    /// <param name="isLocked">NumLock 是否已锁定。</param>
+    private void ReportNumLockFallback(bool isLocked)
+    {
+        string text = isLocked ? "NumLock 已锁定" : "NumLock 已解锁";
+        TrayIconService? tray = _tray;
+
+        if (tray?.IsActive == true)
+        {
+            // 气泡由托盘线程发，正文里带上程序名：Windows 的气泡标题栏显示的是
+            // 通知来源，用户需要知道这是 WinCanvas 而不是系统本身在说话
+            _dispatcherQueue.TryEnqueue(() => tray.ShowBalloon("WinCanvas", text));
+            return;
+        }
+
+        ShowInfo(Microsoft.UI.Xaml.Controls.InfoBarSeverity.Informational, text);
     }
 
     /// <summary>

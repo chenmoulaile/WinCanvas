@@ -61,6 +61,31 @@ public static class WallpaperFormats
         return null;
     }
 
+    /// <summary>
+    /// 档案里的背景路径【当前是否仍然存在且可加载】。
+    ///
+    /// 为什么不能直接用 <see cref="File.Exists"/>：v0.3.0 起壁纸可以是
+    /// 【Wallpaper Engine 项目目录】（含 project.json），而 <c>File.Exists</c> 对目录
+    /// 一律返回 false。恢复管线当时就是踩了这个坑 —— 用目录挂的壁纸重启后
+    /// 全部被判「背景文件已不存在」而跳过，用户看到壁纸没了。
+    /// 把「什么算有效背景路径」收敛成这一个入口，避免各调用方各自用 File.Exists。
+    /// </summary>
+    /// <param name="path">档案里记录的背景路径。</param>
+    public static bool IsAvailableBackgroundPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        if (File.Exists(path))
+        {
+            return true;
+        }
+
+        return Loaders.WallpaperProjectLoader.IsProjectDirectory(path);
+    }
+
     /// <summary>取小写、含点的扩展名（无扩展名返回空串；统一口径供各判定方法使用）。</summary>
     private static string GetExtension(string path) =>
         Path.GetExtension(path)?.ToLowerInvariant() ?? string.Empty;
