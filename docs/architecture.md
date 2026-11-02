@@ -261,7 +261,14 @@ flowchart LR
 
 ## 8. 自动化测试（WP4 / WP5）
 
-- `tests/WinCanvas.Core.Tests`（40 用例）与 `tests/WinCanvas.Wallpaper.Tests`（68 用例），xUnit + `dotnet test` 全绿；合计 108 例。
+- `tests/WinCanvas.Core.Tests`（63 用例）与 `tests/WinCanvas.Wallpaper.Tests`（83 用例），xUnit + `dotnet test` 全绿；合计 146 例。
+- v0.2.0 新增覆盖（此前这些路径 0 覆盖，缺陷因此长期存在）：配置服务的**活对象撕裂**与
+  **CTS 世代竞态**、`.bak` 恢复与坏文件隔离、Dispose 兜底落盘；全局热键表的默认补齐 /
+  用户值不被覆盖 / 三类校验 / 默认表自身无冲突 / 目录覆盖全部枚举值；
+  壁纸呈现路径分派的不变式（`Kind` 与 `HasVideoPlayer` 互不蕴含 —— pkg 内嵌视频
+  的 `Kind` 是 `Pkg` 但必须走视频层）。
+- `HotkeyTable` 原在 `WinCanvas.App.Services`，因不依赖任何 UI 类型而**移到 `WinCanvas.Core.Services`**：
+  留在 App 就进不了现有测试工程（迁移前 App 层是 0 覆盖）。
 - 覆盖：配置防抖合并 / 原子写 / 无 BOM、窗口档案键语义、`WindowControlService` 失败语义（无效句柄抛 `Win32Exception`）与真实窗口行为冒烟、NumLock 去抖纯逻辑（`NumLockStateDebouncer`）、动态帧率状态机真值表、pkg 加载器纯逻辑（路径安全 / 场景判定 / 封面优先级）、宿主挂接矩形与 DPI 换算纯函数；WP5 新增：扩展名单一来源口径（`WallpaperFormats` 与两侧加载器一致性）、合成动画 GIF 的多帧 / 帧延迟 / 首帧别名往返、静态 WebP 解码、UIPI 错误 5 提权引导文案映射（`ProcessElevation`）。
 - 被测项目经 `InternalsVisibleTo` 对测试程序集开放 internal 纯逻辑（`SafeJoin` / `DetectComplexScene` / `FindCoverImage` / `WallpaperHostWindow` 矩形函数 / `NumLockStateDebouncer`）；公共 API 面不变。
 - 需要真实桌面会话的用例打 `[Trait("Category", "RequiresWindowsSession")]`，无头环境用 `--filter "Category!=RequiresWindowsSession"` 排除（xunit 2.9.2 无运行时跳过机制，结论见 WORKLOG WP4）。

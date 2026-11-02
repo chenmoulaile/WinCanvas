@@ -533,3 +533,108 @@ public static class ProcessElevation
 
 - 本应用当前**未提供** CLI 或 IPC 入口，只有 WinUI 3 图形界面。
 - 间接依赖的外部 CLI：`WinTips.exe --test num on|off [holdSeconds]`（本程序以进程调用方式触发，参数格式来自 WinTips 子模块源码 `App/App.xaml.cs` 的 `RunTest` 与 `Core/TipInfo.cs` 的 `TryParseKind`）。
+
+## 7. v0.2.0 新增公开 API
+
+> 本节按【符号】而非行号描述（旧文档大量用 `文件:行号` 锚点，代码一改就整片失效，
+> 实测 architecture.md 里多处指向的行号已落到别的成员上）。要定位实现请直接搜符号名。
+
+### 7.1 Core 模型：全局热键
+
+```csharp
+public enum HotkeyAction { ToggleTopmost, IncreaseOpacity, DecreaseOpacity,
+    ToggleClickThrough, CycleCornerPreference, RefreshWindowList,
+    ToggleWallpaperPause, ClearWallpaper, ShowHideMainWindow, ToggleWinTipsIndicator }
+
+[Flags] public enum HotkeyModifiers : uint { None = 0, Alt = 1, Control = 2, Shift = 4, Win = 8 }
+
+public sealed class HotkeyBinding {
+    public HotkeyAction Action { get; set; }
+    public HotkeyModifiers Modifiers { get; set; }   // 数值直取 Win32 MOD_*
+    public int VirtualKey { get; set; }              // 与 Windows.System.VirtualKey 同构，0 = 未设置
+    public bool Enabled { get; set; } = true;
+}
+```
+
+`HotkeyModifiers` 与 `VirtualKey` 都刻意取 Win32 原值，注册时直接强转，不再维护第二张映射表。
+
+### 7.2 Core：`HotkeyTable`（纯逻辑，可单测）
+
+```csharp
+public static class HotkeyTable {
+    public static readonly (HotkeyAction Action, string Label, string Description)[] Catalog;
+    public static HotkeyBinding GetDefault(HotkeyAction action);
+    public static List<HotkeyBinding> Normalize(IList<HotkeyBinding>? stored);
+    public static string Format(HotkeyBinding? binding);      // "Ctrl+Alt+T" / "未设置"
+    public static string DescribeKey(int virtualKey);
+    public static string? Validate(HotkeyBinding b, IList<HotkeyBinding> all);  // null = 通过
+    public static string LabelOf(HotkeyAction action);
+}
+```
+
+原在 `WinCanvas.App.Services`，因不依赖任何 UI 类型而移到 `WinCanvas.Core.Services`：
+留在 App 就进不了现有测试工程（迁移前 App 层 0 覆盖）。
+`Validate` 强制「至少含 Ctrl 或 Alt」—— 全局热键抢在焦点窗口之前，
+允许单键等于让用户在其它程序里按不动那个键。
+
+### 7.3 Core：`AppConfig` 新增字段（格式升到 Version 2）
+
+```csharp
+public bool WinTipsIndicatorEnabled { get; set; }              // 默认 false
+public List<HotkeyBinding> Hotkeys { get; set; } = new();      // 空 = 用默认表补齐
+```
+
+v1 文件缺这两个字段会分别反序列化成 `false` / 空列表，运行期补齐默认绑定，
+因此**无需迁移代码**即可继续读旧配置。
+
+### 7.4 Core：`ConfigurationService` 新增公开成员
+
+```csharp
+public const int SupportedConfigVersion = 2;   // 加载时校验、落盘时统一钉成此值
+public Exception? LastSaveError { get; }       // 上次落盘失败原因；成功写后清 null
+```
+
+`LastSaveError` 是本次修复的关键可观测性：旧实现把写盘异常整批吞掉，
+用户与开发者都无法知道配置到底有没有落盘。
+
+### 7.5 Core：`IWallpaperService` 新增方法
+
+```csharp
+Task RemoveWallpaperAsync(IntPtr hwnd);
+```
+
+销毁该窗口的宿主与会话、让目标恢复自身绘制。此前接口只有「设置 / 切换」没有「清除」，
+用户挂上背景后只能靠关掉目标窗口来摆脱。
+
+### 7.6 Wallpaper：`WallpaperSource` 新增判定属性
+
+```csharp
+public bool HasVideoPlayer => Player is not null;
+```
+
+服务层的视频呈现分派改用它，**不再用 `Kind == WallpaperKind.Video`**。
+原因：pkg 内嵌视频场景的 `Kind` 必须是 `Pkg`（它驱动 UI 背景类型标签与
+`ExtractedRoot` / `SceneJsonPath` 等元数据语义），旧判定对这类资源恒假，
+导致 `BeginVideo` / `Play()` 从不执行、目标窗口内只剩纯色占位。
+`Kind` 回答「资源从哪来」，`HasVideoPlayer` 回答「要不要走视频呈现」。
+
+### 7.7 App：应用外壳服务（内部类型）
+
+| 类型 | 职责 |
+| --- | --- |
+| `MessagePumpWindow` | 隐藏顶层窗口 + 专用消息线程，同时承载托盘回调与 `WM_HOTKEY`；提供 `InvokeAsync<T>` 把工作封送到泵线程 |
+| `TrayIconService` | `Shell_NotifyIcon` 增删改、托盘菜单构建与跟踪、左键切换窗口 |
+| `GlobalHotkeyService` | 逐条 `RegisterHotKey` 并**逐条报告失败**（1409 = 被占用 → 提示换键），一条失败不影响其余 |
+| `FpsMonitor`（改） | 实现 `IDisposable`；帧处理器随 `Enabled` 挂/摘 |
+
+注册热键必须在**创建该窗口的线程**上执行（`WM_HOTKEY` 投给注册线程的队列），
+故 `ApplyAsync` 经 `InvokeAsync` 封送到泵线程，并用 PostMessage + 超时而非 SendMessage
+（泵线程可能正卡在模态托盘菜单里，同步调用会把 UI 线程一起挂住）。
+
+### 7.8 单实例与退出语义
+
+- 互斥体：`Global\WinCanvas.App.SingleInstance`；唤醒事件：`Global\WinCanvas.App.ShowMainWindow`。
+- 第二实例唤起已有实例主窗口后自行退出。
+- 安装包 `AppMutex` 与互斥体同名（去掉 `Global\` 前缀的形式）。
+- 有托盘时点窗口 X = 收进托盘（`AppWindow.Closing` 里 `args.Cancel = true`）；
+  真退出走托盘菜单，由 `_isExiting` 放行 Closing。
