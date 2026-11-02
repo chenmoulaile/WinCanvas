@@ -148,15 +148,15 @@
       <ResolvedFileToPublish Include="$(OutDir)$(TargetName).pri">
         <RelativePath>$(TargetName).pri</RelativePath>
       </ResolvedFileToPublish>
-      <!-- 3) WinTips 浮窗组件目录（整体递归） -->
+      <!-- 3) WinTips 外挂部署目录（整体递归） -->
       <_PublishWinTipsFiles Include="$(OutDir)WinTips\**\*.*" />
       <ResolvedFileToPublish Include="@(_PublishWinTipsFiles)">
         <RelativePath>WinTips\%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
       </ResolvedFileToPublish>
-      <!-- 4) 应用图标（托盘与窗口图标在运行期按文件路径加载，必须随包发布） -->
-      <ResolvedFileToPublish Include="$(OutDir)WinCanvas.ico" Condition="Exists('$(OutDir)WinCanvas.ico')">
-        <RelativePath>WinCanvas.ico</RelativePath>
-      </ResolvedFileToPublish>
+      <!-- 注：WinCanvas.ico 不在这里加。上面 ItemGroup 里那条
+           None + CopyToOutputDirectory 已经会被发布收集器自动收录，
+           再手动 Include 一次会撞 NETSDK1152（多个相同相对路径的发布输出文件）。
+           实测这条就是 publish 阶段才发现的。 -->
     </ItemGroup>
   </Target>
 
