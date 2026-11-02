@@ -73,6 +73,19 @@
     <!-- WinTips 子模块工程与其默认 Release 输出目录（net10.0-windows，无 RID、无平台子目录） -->
     <WinTipsProject>$(MSBuildThisFileDirectory)..\..\ThirdParty\WinTips\WinTips.csproj</WinTipsProject>
     <WinTipsBuildOutputDir>$(MSBuildThisFileDirectory)..\..\ThirdParty\WinTips\bin\Release\net10.0-windows\</WinTipsBuildOutputDir>
+
+    <!-- 外挂构建用哪个 dotnet 可执行文件。
+         v0.2.0 修正：旧写法直接写 `dotnet build`，于是 PATH 上第一个 dotnet 说了算。
+         在 SDK 不装在默认位置的开发机上（例如 C 盘空间紧张、SDK 放在别的盘，
+         而 C:\Program Files\dotnet 只有运行时没有 SDK）——这条命令必然解析到
+         那个【没有 SDK 的 muxer】，外挂构建永远失败，WinTips.exe 永远部署不上，
+         NumLock 浮窗提示静默退化成 InfoBar。构建日志里只有一条 warning，很容易漏看。
+
+         $(NetCoreRoot) 是 MSBuild 在 .NET Core 宿主下提供的【当前驱动本次构建的 .NET 根目录】
+         （末尾自带分隔符），用它就能保证外挂构建与主构建用同一套 SDK。
+         取不到时才退回裸 `dotnet`（默认安装的场景仍然可用）。 -->
+    <WinTipsDotnetHost Condition="'$(WinTipsDotnetHost)' == '' And Exists('$(NetCoreRoot)dotnet.exe')">$(NetCoreRoot)dotnet.exe</WinTipsDotnetHost>
+    <WinTipsDotnetHost Condition="'$(WinTipsDotnetHost)' == ''">dotnet</WinTipsDotnetHost>
   </PropertyGroup>
 
   <Target Name="BuildAndDeployWinTips"
@@ -88,9 +101,10 @@
       <WinTipsBuildExitCode Condition="'$(WinTipsBuildExitCode)' == ''">0</WinTipsBuildExitCode>
     </PropertyGroup>
 
-    <!-- 1) 外挂构建（.NET 10 SDK）：IgnoreExitCode 使失败不阻断 App 构建，错误码落属性后统一告警 -->
+    <!-- 1) 外挂构建（.NET 10 SDK）：IgnoreExitCode 使失败不阻断 App 构建，错误码落属性后统一告警。
+         用 $(WinTipsDotnetHost) 而不是裸 dotnet，理由见上面属性块的注释。 -->
     <Exec Condition="Exists('$(WinTipsProject)')"
-          Command="dotnet build &quot;$(WinTipsProject)&quot; -c Release --nologo"
+          Command="&quot;$(WinTipsDotnetHost)&quot; build &quot;$(WinTipsProject)&quot; -c Release --nologo"
           IgnoreExitCode="true"
           ConsoleToMsBuild="true"
           StandardOutputImportance="normal"
@@ -112,7 +126,7 @@
 
     <!-- 3) 失败呈现：给出「失败 + 原因 + 用户能做什么」的明确告警（不阻断构建） -->
     <Warning Condition="'$(WinTipsBuildExitCode)' != '0'"
-             Text="WinTips.exe 外挂构建失败（dotnet build 退出码 $(WinTipsBuildExitCode)）：NumLock 浮窗提示将不可用，运行期自动回退主界面 InfoBar 提示；请确认本机已安装 .NET 10 SDK（dotnet --list-sdks 应含 10.0.x）后重新构建。" />
+             Text="WinTips.exe 外挂构建失败（使用 $(WinTipsDotnetHost)，退出码 $(WinTipsBuildExitCode)）：NumLock 浮窗提示将不可用，运行期自动回退主界面 InfoBar 提示；请确认该 dotnet 对应的安装里有 .NET 10 SDK（`$(WinTipsDotnetHost)` --list-sdks 应含 10.0.x）后重新构建。" />
     <Warning Condition="!Exists('$(WinTipsProject)')"
              Text="未找到 WinTips 子模块工程（ThirdParty/WinTips/WinTips.csproj）：请先执行 git submodule update --init 拉取子模块；本次构建不会部署 WinTips.exe，NumLock 提示走本地 InfoBar 回退通道。" />
   </Target>

@@ -186,8 +186,6 @@ public sealed class HotkeyTableTests
         var combos = defaults.Select(b => (b.Modifiers, b.VirtualKey)).ToList();
 
         Assert.Equal(defaults.Count, combos.Distinct().Count());
-        Assert.All(defaults, b => Assert.NotNull(b.Modifiers));
-        Assert.All(defaults, b => Assert.NotEqual(HotkeyAction.ShowHideMainWindow, default(HotkeyAction)));
     }
 
     // ---------- 目录完整性 ----------
@@ -216,6 +214,12 @@ public sealed class HotkeyTableTests
             Assert.Equal(action, b.Action);
             Assert.NotEqual(0, b.VirtualKey);
             Assert.True(b.Enabled);
+
+            // 默认值必须满足自家校验规则：至少含 Ctrl 或 Alt。
+            // （原先这里写的是 Assert.NotNull(b.Modifiers) —— 枚举值类型恒非空，
+            //  等于没断言，xUnit 分析器也直接报 xUnit2002。）
+            Assert.True(b.Modifiers.HasFlag(HotkeyModifiers.Control) || b.Modifiers.HasFlag(HotkeyModifiers.Alt),
+                $"{action} 的默认组合缺少 Ctrl/Alt，会抢掉其它程序的普通按键");
 
             // 默认值本身必须过自己的校验规则
             Assert.Null(HotkeyTable.Validate(b, new[] { b }));

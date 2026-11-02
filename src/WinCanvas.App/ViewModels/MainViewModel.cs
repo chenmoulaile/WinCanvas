@@ -226,7 +226,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ClearWallpaperCommand))]
-    private bool _hasSelection;
+    public partial bool HasSelection { get; set; }
 
     // ---------- 选中项的镜像属性（避免把控件 TwoWay 直接绑到可空的 Selected 上，
     // 防止换选时把旧控件值误写进新选中项） ----------

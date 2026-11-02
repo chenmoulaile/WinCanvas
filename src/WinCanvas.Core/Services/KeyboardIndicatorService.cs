@@ -314,6 +314,19 @@ public sealed class KeyboardIndicatorService : IDisposable
                 var msgId = (uint)wParam; // wParam 携带消息 Id（KEYDOWN/KEYUP 为小值，安全窄化）
                 if (msgId is NativeMethods.WM_KEYDOWN or NativeMethods.WM_KEYUP)
                 {
+                    // v0.2.0：lParam 判空。低级钩子在极端情况下可给到 NULL 指针，
+                    // 旧实现直接封组会抛 ArgumentNullException，被下面的 catch 整批吞掉
+                    // —— 表现是「按了 NumLock 但永远没提示」，且日志里一条痕迹都没有。
+                    if (lParam == IntPtr.Zero)
+                    {
+                        return NativeMethods.CallNextHookEx(Volatile.Read(ref cycle.Hook), nCode, wParam, lParam);
+                    }
+
+                    // 结构体读取。这里保留 Marshal.PtrToStructure 而不是 Unsafe.ReadUnaligned：
+                    // 后者更快但要求给本工程开 unsafe（KBDLLHOOKSTRUCT 只有 5 个定宽字段，
+                    // 反射封组已被 .NET 缓存成委托，单次约百纳秒级）。
+                    // 本回调真正的问题是【同步磁盘 IO】，那一项已整体挪到线程池；
+                    // 为纳秒级差异在钩子代码里引入指针不安全区，收益/风险不划算。
                     var kb = Marshal.PtrToStructure<NativeMethods.KBDLLHOOKSTRUCT>(lParam);
                     if (kb.vkCode == NativeMethods.VK_NUMLOCK)
                         OnNumLockKeyEvent(kb);
@@ -336,17 +349,29 @@ public sealed class KeyboardIndicatorService : IDisposable
     /// KEYDOWN 与 KEYUP 两个时机各读一次 GetKeyState，先看到新状态的时机触发上报，
     /// 另一时机读到相同值被去抖吞掉；无论系统在哪个时机翻转，都恰好上报一次正确的新状态。
     /// 按住不放的自动重复 KEYDOWN 读到的开关位不变，同样被去抖抑制（无提示风暴）。
+    ///
+    /// v0.2.0 关键修正：本方法运行在【钩子回调线程】上，旧实现在这里直接做
+    /// <c>Log(...)</c> / <c>LogThrottled(...)</c> —— 那是 <c>lock + File.AppendAllText</c>，
+    /// 一次开文件、写、关文件的同步磁盘 IO。低级钩子回调受
+    /// <c>LowLevelHooksTimeout</c>（默认数百毫秒）约束，超时系统就【摘掉钩子】并让
+    /// 全系统键盘输入等这一次回调 —— 慢盘或杀软实时扫描时，用户感受到的是
+    /// 「整台机器按键发涩」。现在所有落盘一律挪到线程池，回调内只做整数比较。
     /// </summary>
     /// <param name="kb">钩子事件数据（只读）。</param>
     private void OnNumLockKeyEvent(NativeMethods.KBDLLHOOKSTRUCT kb)
     {
-        // GetKeyState 的切换位（bit0）是全局会话状态（即 LED 灯态），从钩子线程读即全局现值
+        // GetKeyState 的切换位（bit0）：本次调用线程处理消息时同步来的键盘状态。
+        // 钩子线程读到的值可能比主会话略旧，因此下面 KEYDOWN/KEYUP 各读一次做自纠错。
         var locked = (NativeMethods.GetKeyState(NativeMethods.VK_NUMLOCK) & 0x0001) != 0;
 
         if (!_debouncer.OnSample(locked))
         {
-            // 重复状态事件（按住自动重复 / 同一翻转的另一时机读到同值）：仅节流打点，不上报
-            LogThrottled($"NumLock 重复状态事件已抑制（locked={locked}，vk=0x{kb.vkCode:X2}）");
+            // 重复状态事件（按住自动重复 / 同一翻转的另一时机读到同值）：不上报。
+            // 打点也丢到线程池 —— LogThrottled 内部是同步文件 IO，不能留在回调里。
+            var suppressedLocked = locked;
+            var suppressedVk = kb.vkCode;
+            ThreadPool.QueueUserWorkItem(_ =>
+                LogThrottled($"NumLock 重复状态事件已抑制（locked={suppressedLocked}，vk=0x{suppressedVk:X2}）"));
             return;
         }
 
@@ -355,11 +380,13 @@ public sealed class KeyboardIndicatorService : IDisposable
         var latencyMs = Environment.TickCount64 - kb.time;
         var latencyText = latencyMs is >= 0 and < 60000 ? $"事件延迟 {latencyMs}ms" : "事件延迟（跨回绕点，不计）";
 
-        Log($"NumLock 状态变化 → {(locked ? "已锁定" : "已解锁")}（{latencyText}），派发线程池上报");
-
         var captured = locked; // 闭包捕获局部副本，避免共享状态跨线程可见性问题
+
+        // 一次派发同时完成「打点」与「弹提示」，回调线程到此返回（微秒级）
         ThreadPool.QueueUserWorkItem(_ =>
         {
+            Log($"NumLock 状态变化 → {(captured ? "已锁定" : "已解锁")}（{latencyText}），派发上报");
+
             try
             {
                 _notifier.ShowNumLockStatus(captured);

@@ -81,6 +81,28 @@ internal static partial class NativeMethods
     public static extern bool IsWindowVisible(IntPtr hWnd);
 
     /// <summary>
+    /// 校验句柄是否【仍然是一个窗口】。
+    ///
+    /// 为什么必须用它：本服务的 hwnd 来自上一次枚举的快照，而恢复管线是「200ms 间隔 + 并发 2」
+    /// 排队派发的 —— 从枚举到真正调用 SetWindowPos 之间，窗口可能已被销毁、
+    /// 其句柄值也可能被系统【复用给另一个窗口】。少了这一步预检，
+    /// 最坏情况是把置顶/穿透/透明打到了一个毫不相干的窗口上（句柄复用是经典事故源）。
+    /// 注意它挡不住「句柄已销毁且恰好被复用」这一极端情形，但能挡住绝大多数
+    /// 「目标已关闭仍在调用」的常规竞态。
+    /// </summary>
+    /// <param name="hWnd">目标窗口句柄。</param>
+    /// <returns>true = 句柄当前有效。</returns>
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr hWnd);
+
+    /// <summary>
+    /// DWM 是否正在「 cloaking 」该窗口（UWP/WinUI 应用被挂起、虚拟桌面切走、
+    /// MinWin 组合器隐藏等）。被 cloaked 的窗口 <see cref="IsWindowVisible"/> 仍返回 true，
+    /// 因此只按可见性过滤会把一批「看不见但存在」的框架窗口放进列表。
+    /// </summary>
+    public const int DWMWA_CLOAKED = 14;
+
+    /// <summary>
     /// 返回窗口标题的字符长度（不含结尾 '\0'）；无标题返回 0。
     /// </summary>
     /// <param name="hWnd">目标窗口句柄。</param>

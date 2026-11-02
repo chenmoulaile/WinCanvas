@@ -62,7 +62,7 @@ internal static class KeyboardDiagnostics
         return true;
     }
 
-    /// <summary>实际落盘：目录惰性创建，写失败静默吞掉（诊断日志绝不反噬钩子功能）。</summary>
+    /// <summary>实际落盘：目录惰性创建 + 超限轮转，写失败静默吞掉（诊断日志绝不反噬钩子功能）。</summary>
     private static void Write(string line)
     {
         try
@@ -73,12 +73,41 @@ internal static class KeyboardDiagnostics
                 if (dir != null && !Directory.Exists(dir))
                     Directory.CreateDirectory(dir);
 
+                RotateIfNeeded();
                 File.AppendAllText(LogFilePath, line + Environment.NewLine);
             }
         }
         catch
         {
             // 日志写失败（磁盘满 / 目录权限等）不影响钩子运行，静默忽略
+        }
+    }
+
+    /// <summary>
+    /// 单文件上限，超过则滚动成 .old。
+    /// v0.2.0 补上：旧实现无轮转无上限，本程序也从不清理日志目录 ——
+    /// 长期开着 NumLock 提示，这个文件会一直长到占满磁盘。
+    /// </summary>
+    private const long MaxLogBytes = 256 * 1024;
+
+    /// <summary>超上限则滚动为 .old（覆盖上一份）。调用方须已持 <see cref="_writeGate"/>。</summary>
+    private static void RotateIfNeeded()
+    {
+        var info = new FileInfo(LogFilePath);
+        if (!info.Exists || info.Length < MaxLogBytes)
+            return;
+
+        string rolled = LogFilePath + ".old";
+        try
+        {
+            if (File.Exists(rolled))
+                File.Delete(rolled);
+
+            File.Move(LogFilePath, rolled);
+        }
+        catch
+        {
+            // 滚动失败就继续追加：宁可暂时超限，也不因诊断日志干扰键盘钩子路径
         }
     }
 
