@@ -1,6 +1,8 @@
+using System;
+
 using WinCanvas.Core.Models;
 
-namespace WinCanvas.App.Services;
+namespace WinCanvas.Core.Services;
 
 /// <summary>
 /// 全局热键的默认绑定表与人读文本格式化（v0.2.0 新增）。
@@ -13,13 +15,13 @@ namespace WinCanvas.App.Services;
 /// <see cref="GlobalHotkeyService"/> 会把该条标记为冲突并在界面上说明，
 /// 用户可以改键，而不是启动就失败。
 /// </summary>
-internal static class HotkeyTable
+public static class HotkeyTable
 {
     /// <summary>
     /// 功能动作的人读名称（设置界面左列）。
     /// 顺序即界面展示顺序，与 <see cref="HotkeyAction"/> 的枚举值顺序一致。
     /// </summary>
-    internal static readonly (HotkeyAction Action, string Label, string Description)[] Catalog =
+    public static readonly (HotkeyAction Action, string Label, string Description)[] Catalog =
     {
         (HotkeyAction.ToggleTopmost, "置顶切换", "对当前选中的窗口切换置顶"),
         (HotkeyAction.IncreaseOpacity, "提高透明度", "选中窗口不透明度 +32（上限 255）"),
@@ -52,7 +54,7 @@ internal static class HotkeyTable
     };
 
     /// <summary>取某动作的默认绑定。</summary>
-    internal static HotkeyBinding GetDefault(HotkeyAction action)
+    public static HotkeyBinding GetDefault(HotkeyAction action)
     {
         var (mods, vk) = Defaults.TryGetValue(action, out var d)
             ? d
@@ -72,7 +74,7 @@ internal static class HotkeyTable
     /// 配置里缺的动作补默认值（所以用户删掉一条只是回到默认，不是关掉它），
     /// 多出来的（旧版本遗留的动作名）原样保留，不做删除，避免升级丢配置。
     /// </summary>
-    internal static List<HotkeyBinding> Normalize(IList<HotkeyBinding>? stored)
+    public static List<HotkeyBinding> Normalize(IList<HotkeyBinding>? stored)
     {
         var byAction = new Dictionary<HotkeyAction, HotkeyBinding>();
 
@@ -97,7 +99,7 @@ internal static class HotkeyTable
     /// 组合键的人读文本，如 <c>Ctrl+Alt+T</c>；未设置主键时返回「未设置」。
     /// 修饰键顺序固定 Ctrl→Alt→Shift→Win，与 Windows 设置里的书写习惯一致。
     /// </summary>
-    internal static string Format(HotkeyBinding? binding)
+    public static string Format(HotkeyBinding? binding)
     {
         if (binding is null || binding.VirtualKey == 0)
         {
@@ -136,7 +138,7 @@ internal static class HotkeyTable
     /// 只覆盖本项目默认值会用到的区间 + 常用功能键；其余回落成十六进制码，
     /// 宁可显示「键 0x5F」也不要显示空白让人以为没设置上。
     /// </summary>
-    internal static string DescribeKey(int virtualKey)
+    public static string DescribeKey(int virtualKey)
     {
         return virtualKey switch
         {
@@ -184,7 +186,7 @@ internal static class HotkeyTable
     /// 允许 F1 或单键做全局热键，等于让用户在别的软件里突然按不动那个键，
     /// 而且这种冲突极难归因。所以至少要求 Ctrl 或 Alt 之一。
     /// </summary>
-    internal static string? Validate(HotkeyBinding binding, IList<HotkeyBinding> all)
+    public static string? Validate(HotkeyBinding binding, IList<HotkeyBinding> all)
     {
         if (binding.VirtualKey == 0)
         {
@@ -216,7 +218,7 @@ internal static class HotkeyTable
     }
 
     /// <summary>动作的人读名称（找不到时回落成枚举名，不让界面显示空串）。</summary>
-    internal static string LabelOf(HotkeyAction action)
+    public static string LabelOf(HotkeyAction action)
     {
         foreach (var entry in Catalog)
         {

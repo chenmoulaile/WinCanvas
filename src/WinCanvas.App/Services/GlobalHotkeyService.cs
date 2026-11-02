@@ -1,3 +1,4 @@
+using WinCanvas.Core.Services;
 using System.Runtime.InteropServices;
 using WinCanvas.App.Native;
 using WinCanvas.Core.Models;

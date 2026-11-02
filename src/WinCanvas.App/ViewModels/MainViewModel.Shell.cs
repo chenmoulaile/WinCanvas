@@ -1,3 +1,4 @@
+using WinCanvas.Core.Services;
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -118,6 +119,22 @@ public partial class MainViewModel
 
         BuildHotkeyRows();
         return true;
+    }
+
+    /// <summary>
+    /// 配置加载完成后初始化热键：按配置重建界面行，并【立即注册】。
+    /// 由 <c>InitializeAsync</c> 在 LoadAsync 之后调用 —— AttachShell 跑得太早，
+    /// 那时 _appConfig 还是默认值，注册必须等配置到位。
+    /// </summary>
+    internal void InitializeHotkeyBindings()
+    {
+        if (_hotkeys is null)
+        {
+            return; // 外壳没起来（消息窗口创建失败）：界面仍可用，只是没有快捷键
+        }
+
+        BuildHotkeyRows();
+        _ = ApplyHotkeysAsync();
     }
 
     /// <summary>

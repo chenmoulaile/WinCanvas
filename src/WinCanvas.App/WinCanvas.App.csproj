@@ -20,6 +20,16 @@
     <!-- 自带 WinAppSDK 运行时，目标机器无需安装 Windows App Runtime -->
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
 
+    <!-- .NET 运行时同样自带。v0.2.0 补上：
+         此前只有 WindowsAppSDKSelfContained，CLR 仍是【框架依赖】—— net8 时代本机
+         装了 .NET 8 桌面运行时所以没暴露问题；迁到 net10 后 dotnet build 的产物
+         双击直接弹「You must install or update .NET to run this application」，
+         因为默认安装位置没有 .NET 10 运行时。
+         对一个要分发给用户桌面的工具，「装了就能跑、不要求用户先装运行时」
+         本来就该是默认；发布产物体积增加有限（原本自包含 WinAppSDK 已经 200MB 级）。 -->
+    <SelfContained>true</SelfContained>
+    <PublishSelfContained>true</PublishSelfContained>
+
     <!-- WinUI 3 不支持 AnyCPU 产物，骨架阶段固定 x64 -->
     <Platforms>x64</Platforms>
     <Platform>x64</Platform>

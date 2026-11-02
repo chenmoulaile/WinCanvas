@@ -59,6 +59,18 @@ public sealed record WallpaperSource : IDisposable
     /// <summary>视频资源的磁盘路径（第二层直接文件，或 pkg 内嵌视频解包产物）。</summary>
     public string? VideoPath { get; init; }
 
+    /// <summary>
+    /// 本资源是否携带需要组合呈现的视频播放器。
+    ///
+    /// 为什么要有这个属性（v0.2.0）：服务层原先用 <c>Kind == WallpaperKind.Video</c>
+    /// 判断「有没有视频要上屏」，而 pkg 内嵌视频场景的 Kind 是 <c>Pkg</c>
+    /// （PkgWallpaperLoader 必须保持 Pkg：它驱动 UI 的背景类型标签与 pkg 元数据语义），
+    /// 于是那条判定对 pkg 视频永假 → BeginVideo / Play 从不执行，目标窗口里只剩纯色占位。
+    /// Kind 回答的是「资源从哪来」，播放器回答的是「要不要走视频呈现」——
+    /// 两者不是一回事，这里把后者显式表达出来，避免再被混用。
+    /// </summary>
+    public bool HasVideoPlayer => Player is not null;
+
     /// <summary>原始资源路径。</summary>
     public string OriginalPath { get; init; } = string.Empty;
 

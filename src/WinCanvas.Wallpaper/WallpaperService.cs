@@ -253,13 +253,13 @@ public sealed class WallpaperService : IWallpaperService
             // 而纯视频 pkg 的 ImageFrame 又为空 → 目标窗口内什么都不显示（纯色占位）。
             // 即 README「pkg 层：纯视频场景走视频层」的承诺是失效的。
             // 播放器存在与否才是「有没有视频要上屏」的真相，Kind 只管「资源从哪来」。
-            if (source.Player is null)
+            if (!source.HasVideoPlayer)
                 host.EndVideo();
 
             // 视频（规格 WP1-C ADR：组合呈现路径）：播放器经 GetSurface(compositor) 直接渲染进
             // 组合表面，SpriteVisual 按视频比例加边布局——零拷贝、零逐帧代码；帧率联动复用既有
             // 状态机（暂停态 → player.Pause() → 画面定格），无任何轮询。
-            if (source.Player is { } videoPlayer)
+            if (source.HasVideoPlayer && source.Player is { } videoPlayer)
             {
                 if (host.BeginVideo(videoPlayer))
                 {
@@ -306,7 +306,7 @@ public sealed class WallpaperService : IWallpaperService
         // 视频层：先把播放器交给订阅方挂输出面（MediaPlayerElement.SetMediaPlayer），
         // 必须在旧会话 Dispose 之前发出，让 UI 尽快从旧播放器切换到新播放器。
         // 判定同样以 Player 为准（pkg 内嵌视频的 Kind 是 Pkg，见上文注释）。
-        if (source.Player is { } readyPlayer)
+        if (source.HasVideoPlayer && source.Player is { } readyPlayer)
             VideoPlayerReady?.Invoke(hwnd, readyPlayer);
 
         // 旧资源用毕即释放：先摘掉旧回调（避免释放期间在途帧回调摸到已释放资源），再 Dispose

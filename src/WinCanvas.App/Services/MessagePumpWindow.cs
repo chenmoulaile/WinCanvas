@@ -99,7 +99,10 @@ internal sealed class MessagePumpWindow : IDisposable
 
         try
         {
-            window._thread.Start(window);
+            // Pump 是无参的实例方法，必须用无参 Start()。
+            // （传参的 Start(object) 只在 ThreadStart 带 object 参数时合法，
+            //   否则会抛 InvalidOperationException，整个外壳直接起不来。）
+            window._thread.Start();
             if (!window._created.Wait(TimeSpan.FromSeconds(5)))
             {
                 error = "系统消息窗口创建超时（5 秒）";
@@ -378,7 +381,13 @@ internal sealed class MessagePumpWindow : IDisposable
         try
         {
             _created.Set(); // 万一还没建起来就要求释放，别让它白等
-            _thread.Join(TimeSpan.FromSeconds(3));
+
+            // Join 只能对【已启动】的线程调用：线程因创建失败而从未跑起来时
+            // 直接 Join 会抛 ThreadStateException。
+            if (_thread.IsAlive)
+            {
+                _thread.Join(TimeSpan.FromSeconds(3));
+            }
         }
         catch (Exception ex)
         {

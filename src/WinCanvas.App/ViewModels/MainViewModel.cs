@@ -371,6 +371,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
         AutoRestoreOnStartup = _appConfig.AutoRestoreOnStartup;
         _suppressAutoRestoreSync = false;
 
+        // 全局热键：配置此刻才真正加载完，界面行要按配置重建、并按配置注册。
+        // 修掉的接线遗漏：AttachShell 在构造函数里就跑（那时 _appConfig 还是默认值），
+        // 而注册只在用户点「应用」时发生 → 程序刚启动的整段会话里【一个热键都没注册】，
+        // 表现为「设置界面上写着 Ctrl+Alt+C，按了却毫无反应」。
+        InitializeHotkeyBindings();
+
         await RefreshAsync();
     }
 
