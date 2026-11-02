@@ -44,6 +44,12 @@ public interface IWallpaperService
     void PauseRendering();
 
     /// <summary>
+    /// 是否允许壁纸发声（v0.3.0 引入，<b>默认 false = 静音</b>）。
+    /// 赋值时立即作用于已在播放的会话，用户打开开关应当马上听到声音。
+    /// </summary>
+    bool AudioEnabled { get; set; }
+
+    /// <summary>
     /// 恢复渲染。
     /// </summary>
     void ResumeRendering();

@@ -33,6 +33,7 @@ public static class HotkeyTable
         (HotkeyAction.ClearWallpaper, "清除背景", "移除选中窗口的壁纸背景"),
         (HotkeyAction.ShowHideMainWindow, "显示 / 隐藏主界面", "配合托盘：窗口收进托盘后叫回来"),
         (HotkeyAction.ToggleWinTipsIndicator, "NumLock 提示开关", "开 / 关低级键盘钩子与浮窗提示"),
+        (HotkeyAction.ToggleWallpaperAudio, "壁纸声音开关", "开 / 关壁纸发声（默认静音）"),
     };
 
     /// <summary>
@@ -51,6 +52,7 @@ public static class HotkeyTable
         [HotkeyAction.ClearWallpaper] = (HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x58),           // X
         [HotkeyAction.ShowHideMainWindow] = (HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x43),       // C
         [HotkeyAction.ToggleWinTipsIndicator] = (HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x4E),   // N
+        [HotkeyAction.ToggleWallpaperAudio] = (HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x4D),     // M（Mute/Music）
     };
 
     /// <summary>取某动作的默认绑定。</summary>

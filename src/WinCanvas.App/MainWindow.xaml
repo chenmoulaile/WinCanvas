@@ -213,6 +213,117 @@
                             </Border>
                         </StackPanel>
 
+                        <!-- ===== 壁纸库（v0.3.0 新增：自动检索 Wallpaper Engine 项目）===== -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="壁纸库"
+                                       Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                       VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                <ProgressRing Width="20" Height="20"
+                                              IsActive="{x:Bind ViewModel.IsLibraryScanning, Mode=OneWay}" />
+                                <Button Click="OnAddLibraryRootClick"
+                                        AutomationProperties.Name="添加一个 Wallpaper Engine 项目目录作为扫描根"
+                                        Content="添加目录" />
+                                <Button Command="{x:Bind ViewModel.ScanLibraryCommand}"
+                                        IsEnabled="{x:Bind ViewModel.CanScanLibrary, Mode=OneWay}"
+                                        Style="{ThemeResource AccentButtonStyle}"
+                                        AutomationProperties.Name="扫描全部已配置目录并列出可挂接壁纸"
+                                        Content="检索壁纸库" />
+                            </StackPanel>
+                        </Grid>
+
+                        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8" Padding="16">
+                            <StackPanel Spacing="12">
+                                <TextBlock Text="自动检索 Wallpaper Engine 的项目目录（project.json）、创意工坊已订阅壁纸，以及目录里散落的图片 / 视频 / .pkg。选中一个窗口后点条目即可挂接。"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Opacity="0.8" TextWrapping="Wrap" />
+
+                                <!-- 扫描根列表：让用户看清「在哪些目录里找」，也便于移除 -->
+                                <TextBlock Text="{x:Bind ViewModel.LibraryRootsText, Mode=OneWay}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Opacity="0.7" TextWrapping="Wrap" />
+
+                                <TextBox PlaceholderText="按标题过滤壁纸…"
+                                         Text="{x:Bind ViewModel.LibraryFilter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.Name="过滤壁纸库条目" />
+
+                                <!-- 库条目：虚拟化 ListView，缩略图按视口延迟解码 -->
+                                <GridView MaxHeight="360"
+                                          IsItemClickEnabled="True"
+                                          SelectionMode="None"
+                                          ItemClick="OnLibraryItemClick"
+                                          ItemsSource="{x:Bind ViewModel.FilteredLibraryItems, Mode=OneWay}"
+                                          ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                    <GridView.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:WallpaperLibraryItemViewModel">
+                                            <Grid Width="150" Padding="6" RowSpacing="4"
+                                                  Loaded="OnLibraryItemLoaded">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+
+                                                <Border Height="76" CornerRadius="4"
+                                                        Background="{ThemeResource LayerFillColorDefaultBrush}">
+                                                    <Grid>
+                                                        <!-- 无预览图时的类型占位 -->
+                                                        <TextBlock Text="{x:Bind KindLabel}"
+                                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                                   Opacity="0.5" Style="{ThemeResource CaptionTextBlockStyle}" />
+                                                        <Image Source="{x:Bind Preview, Mode=OneWay}"
+                                                               Stretch="UniformToFill"
+                                                               Visibility="{x:Bind PreviewVisibility, Mode=OneWay}" />
+                                                    </Grid>
+                                                </Border>
+
+                                                <TextBlock Grid.Row="1" Text="{x:Bind Title}"
+                                                           MaxLines="2" TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}" />
+
+                                                <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="6">
+                                                    <TextBlock Text="{x:Bind KindLabel}"
+                                                               Style="{ThemeResource CaptionTextBlockStyle}" Opacity="0.6" />
+                                                    <!-- 含音轨标记：提醒「这张有声音，但默认是静音的」 -->
+                                                    <TextBlock Text="♪"
+                                                               Visibility="{x:Bind AudioVisibility, Mode=OneWay}"
+                                                               Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                                               Style="{ThemeResource CaptionTextBlockStyle}" />
+                                                </StackPanel>
+
+                                                <!-- 不可用原因：直接在条目里说清，而不是等点了才报错 -->
+                                                <TextBlock Grid.Row="3" Text="{x:Bind UnusableReason}"
+                                                           Visibility="{x:Bind UnusableVisibility, Mode=OneWay}"
+                                                           Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                                                           MaxLines="2" TextWrapping="Wrap"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </GridView.ItemTemplate>
+                                </GridView>
+
+                                <TextBlock Text="{x:Bind ViewModel.LibraryStatusText, Mode=OneWay}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Opacity="0.8" TextWrapping="Wrap" />
+
+                                <!-- 壁纸声音：默认关闭 -->
+                                <ToggleSwitch Header="壁纸声音（默认关闭）"
+                                              IsOn="{x:Bind ViewModel.WallpaperAudioEnabled, Mode=TwoWay}"
+                                              AutomationProperties.Name="允许带音轨的壁纸发声；默认关闭" />
+                                <TextBlock Text="{x:Bind ViewModel.AudioHintText, Mode=OneWay}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Opacity="0.7" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
                         <!-- 设置区（始终可见） -->
                         <TextBlock Text="设置"
                                    Style="{ThemeResource BodyStrongTextBlockStyle}" />

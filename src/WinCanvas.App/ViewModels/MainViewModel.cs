@@ -393,6 +393,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // 表现为「设置界面上写着 Ctrl+Alt+C，按了却毫无反应」。
         InitializeHotkeyBindings();
 
+        // 壁纸库与声音：接配置里的扫描根与音频开关，配了根就自动检索一次
+        InitializeWallpaperLibrary();
+
         await RefreshAsync();
     }
 
@@ -831,6 +834,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     private static BackgroundType DetectBackgroundType(string path)
     {
+        // Wallpaper Engine 项目目录：按扩展名判会返回 None（目录名常是纯数字工坊 Id，
+        // 根本没有扩展名），于是档案里记成「无背景」、恢复管线也不会重新挂它。
+        // 这里显式归到 Pkg（同为 WE 壁纸资源）。
+        if (Directory.Exists(path)
+            && WinCanvas.Wallpaper.Loaders.WallpaperProjectLoader.IsProjectDirectory(path))
+        {
+            return BackgroundType.Pkg;
+        }
+
         return WallpaperFormats.DetectKind(path) switch
         {
             WallpaperKind.Image => BackgroundType.Image,

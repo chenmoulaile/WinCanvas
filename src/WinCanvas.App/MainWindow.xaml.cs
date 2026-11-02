@@ -364,6 +364,51 @@ public sealed partial class MainWindow : Window
         args.Handled = ViewModel.HandleCapturedKey((int)vk, mods);
     }
 
+    /// <summary>
+    /// 「添加扫描目录」按钮：ViewModel 不直接碰 WinUI 对话框（保持可测试），
+    /// 由 View 负责弹选择器并把结果回灌给命令。
+    /// </summary>
+    private async void OnAddLibraryRootClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        try
+        {
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            string? picked = await FilePickerService.PickFolderAsync(hwnd);
+            await ViewModel.AddLibraryRootCommand.ExecuteAsync(picked);
+        }
+        catch (Exception ex)
+        {
+            App.LogFatal(ex, "打开文件夹选择器失败");
+        }
+    }
+
+    /// <summary>
+    /// 壁纸库条目点击：把该条目挂到当前选中的窗口。
+    /// GridView 开了 IsItemClickEnabled，条目对象在 e.ClickedItem 上。
+    /// </summary>
+    private void OnLibraryItemClick(object sender, Microsoft.UI.Xaml.Controls.ItemClickEventArgs e)
+    {
+        if (e.ClickedItem is ViewModels.WallpaperLibraryItemViewModel item)
+        {
+            // 走生成的命令而不是直接调私有方法：命令自带 CanExecute（需要已选中窗口），
+            // 未选中时它自己就会拒绝，界面反馈与快捷键路径完全一致
+            ViewModel.ApplyLibraryItemCommand.Execute(item);
+        }
+    }
+
+    /// <summary>
+    /// 库面板条目滚进视口时才解码缩略图。
+    /// 一个真实库有上百个条目，构造时全解码会在打开界面的一瞬间把几十上百张图
+    /// 同时推进内存；交给 ListView 的虚拟化节奏，只处理实际可见的那些。
+    /// </summary>
+    private void OnLibraryItemLoaded(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: ViewModels.WallpaperLibraryItemViewModel item })
+        {
+            item.EnsurePreview();
+        }
+    }
+
     /// <summary>读某个虚拟键的实时按下状态（最高位为 1 = 按下）。</summary>
     private static bool IsDown(int virtualKey)
     {

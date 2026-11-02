@@ -37,6 +37,21 @@ public sealed class AppConfig
     public bool WinTipsIndicatorEnabled { get; set; }
 
     /// <summary>
+    /// 是否允许壁纸发声。<b>默认 false（静音）</b>。
+    /// 壁纸是背景，默认外放会在用户不知情时突然出声，且工坊素材的音量完全不可控。
+    /// </summary>
+    public bool WallpaperAudioEnabled { get; set; }
+
+    /// <summary>
+    /// 壁纸库扫描根（绝对路径列表）。
+    /// 为空时运行期使用 <c>WallpaperEngineLibrary.DetectRoots()</c> 的自动探测结果；
+    /// 非空则以用户配置的为准（自动探测的结果仍会并入，去重）。
+    /// 之所以必须允许手工配置：实测存在「Wallpaper Engine 不是通过 Steam 安装、
+    /// 放在自己盘上的某个目录」的情形，注册表与标准路径都探不到。
+    /// </summary>
+    public List<string> WallpaperLibraryRoots { get; set; } = new();
+
+    /// <summary>
     /// 全局热键绑定表（版本 2 新增）。
     /// 为空不代表「无热键」——运行期由 <c>HotkeyTable.Normalize</c> 按动作补齐默认组合，
     /// 所以用户删掉某条只是回到默认，要真正停用请把该条的 <see cref="HotkeyBinding.Enabled"/> 置 false。

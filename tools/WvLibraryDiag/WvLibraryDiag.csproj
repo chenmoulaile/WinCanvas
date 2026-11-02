@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Wallpaper Engine 壁纸库检索与项目分派的验收命令（v0.3.0）。
+         与 Wp1AHostDiag / Wp5FormatDiag 同路线：不加入 WinCanvas.sln
+         （不占基线 warning 门禁口径），单独 dotnet run 驱动；
+         由 CI 的「诊断工具编译检查」一步负责防腐烂。
+         TFM 与被测的 WinCanvas.Wallpaper 一致。 -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>WvLibraryDiag</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 被测对象：WallpaperEngineLibrary（检索）+ WallpaperProjectReader/Loader（分派） -->
+    <ProjectReference Include="..\..\src\WinCanvas.Wallpaper\WinCanvas.Wallpaper.csproj" />
+  </ItemGroup>
+
+</Project>

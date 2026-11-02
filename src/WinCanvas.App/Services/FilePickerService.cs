@@ -45,4 +45,29 @@ public static class FilePickerService
         var file = await picker.PickSingleFileAsync();
         return file?.Path;
     }
+
+    /// <summary>
+    /// 弹出「选择文件夹」对话框，用于添加壁纸库扫描目录；取消时返回 null。
+    ///
+    /// 为什么必须有：Wallpaper Engine 不一定装在 Steam 的标准位置 ——
+    /// 实测就有「绿色版放在自己盘某个目录」的情形，注册表与
+    /// libraryfolders.vdf 都探不到。没有手工指路的能力，这类安装就用不上自动检索。
+    /// </summary>
+    /// <param name="ownerHwnd">属主窗口句柄。</param>
+    public static async Task<string?> PickFolderAsync(IntPtr ownerHwnd)
+    {
+        var picker = new FolderPicker
+        {
+            SuggestedStartLocation = PickerLocationId.ComputerFolder,
+        };
+
+        // FolderPicker 要求至少一个文件类型才能正常工作（它选的是目录，
+        // 但这个占位类型不能为空，否则直接抛异常）—— 官方文档给出的惯例是 "*"
+        picker.FileTypeFilter.Add("*");
+
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, ownerHwnd);
+
+        var folder = await picker.PickSingleFolderAsync();
+        return folder?.Path;
+    }
 }

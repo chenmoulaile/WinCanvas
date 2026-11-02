@@ -319,6 +319,10 @@ public partial class MainViewModel
                 ToggleWinTips();
                 return;
 
+            case HotkeyAction.ToggleWallpaperAudio:
+                ToggleWallpaperAudio();
+                return;
+
             case HotkeyAction.ToggleTopmost:
                 if (selected == null)
                 {

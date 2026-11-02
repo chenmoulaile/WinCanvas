@@ -2,8 +2,10 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Windows.Graphics.Imaging;
+using Windows.Media.Playback;
 using WinCanvas.Core.Interfaces;
 using WinCanvas.Wallpaper.Hosting;
 using WinCanvas.Wallpaper.Models;
@@ -535,6 +537,44 @@ public sealed class WallpaperService : IWallpaperService
             session.RenderLoop.Dispose();
     }
 
+    /// <summary>
+    /// 是否允许壁纸发声（v0.3.0 新增，<b>默认 false = 静音</b>）。
+    ///
+    /// 为什么默认关：壁纸是【背景】。让它默认带声音会在用户不知情时突然外放，
+    /// 而且创意工坊素材的音量、曲目完全不可控 —— 静音必须是默认态，
+    /// 出声是用户显式选择的例外。这也与迁移前「一律硬编码静音」的实际观感一致，
+    /// 只是现在多了一个能打开的开关。
+    ///
+    /// 设置时【立即作用于已在播的会话】：用户打开开关就应该马上听到，
+    /// 而不是等下次换壁纸才生效。
+    /// </summary>
+    public bool AudioEnabled
+    {
+        get => _audioEnabled;
+        set
+        {
+            if (_audioEnabled == value)
+            {
+                return;
+            }
+
+            _audioEnabled = value;
+
+            WallpaperSession[] snapshot;
+            lock (_gate)
+            {
+                snapshot = _sessions.Values.ToArray();
+            }
+
+            foreach (WallpaperSession session in snapshot)
+            {
+                session.ApplyAudio(value);
+            }
+        }
+    }
+
+    private volatile bool _audioEnabled;
+
     /// <inheritdoc />
     public void PauseRendering()
     {
@@ -561,6 +601,16 @@ public sealed class WallpaperService : IWallpaperService
     /// </summary>
     private WallpaperSource PrepareSource(IntPtr hwnd, string path)
     {
+        // 第〇层：Wallpaper Engine 项目目录（v0.3.0 新增）。
+        // 必须排在扩展名判定之前：项目目录的「扩展名」是空（目录名常是纯数字的工坊 Id），
+        // 走下面的分支会一路掉到 NotSupportedException。
+        // 判据是「该目录里有 project.json」，不是「它是个目录」——
+        // 用户随便指一个图片文件夹时，仍应按后面的文件规则处理。
+        if (Directory.Exists(path) && Loaders.WallpaperProjectLoader.IsProjectDirectory(path))
+        {
+            return Loaders.WallpaperProjectLoader.Load(path, AudioEnabled);
+        }
+
         // 第一层：图片（含 GIF 多帧动画，WP5；导入时缩放到承载窗口所在显示器的分辨率）
         if (WallpaperFormats.IsImage(path))
         {
@@ -570,15 +620,24 @@ public sealed class WallpaperService : IWallpaperService
 
         // 第二层：视频（Media Foundation 硬件解码）
         if (WallpaperFormats.IsVideo(path))
-            return Loaders.VideoWallpaperLoader.Load(path);
+            return Loaders.VideoWallpaperLoader.Load(path, AudioEnabled);
 
         // 第三层：pkg 包（repkg 解包 + 纹理解码 + 场景分析）
         if (WallpaperFormats.IsPkg(path))
             return Loaders.PkgWallpaperLoader.Load(path);
 
+        // 目录但不是 WE 项目：给出可操作的提示，而不是把目录路径当扩展名甩在错误信息里
+        if (Directory.Exists(path))
+        {
+            throw new NotSupportedException(
+                "所选文件夹不是 Wallpaper Engine 项目（里面没有 project.json）。" +
+                "请直接选择图片 / 视频 / .pkg 文件，或选择含 project.json 的项目目录。");
+        }
+
         throw new NotSupportedException(
             $"不支持的壁纸类型：{Path.GetExtension(path)}。支持图片（{string.Join(" ", WallpaperFormats.ImageExtensions)}）、" +
-            $"视频（{string.Join(" ", WallpaperFormats.VideoExtensions)}）与 .pkg。");
+            $"视频（{string.Join(" ", WallpaperFormats.VideoExtensions)}）、.pkg，" +
+            "以及 Wallpaper Engine 项目目录（含 project.json）。");
     }
 
     private void Report(string message) => StatusReported?.Invoke(message);
@@ -757,6 +816,40 @@ public sealed class WallpaperService : IWallpaperService
             {
                 // 单帧快照 / 上屏异常不杀死渲染线程（渲染循环本就吞 FrameTick 异常；
                 // 这里捕获是为了不让异常打断 _nextFrameDueMs 的推进节奏）
+            }
+        }
+
+        /// <summary>
+        /// 应用全局声音开关到本会话的播放器（v0.3.0）。
+        /// 无播放器（图片 / GIF / pkg 封面降级）时为 no-op —— 那些本来就不发声。
+        /// 加锁与帧回调互斥，避免在途回调摸到正在改的播放器。
+        /// </summary>
+        /// <param name="enabled">true = 允许发声。</param>
+        public void ApplyAudio(bool enabled)
+        {
+            lock (_tickGate)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                MediaPlayer? player = Source.Player;
+                if (player == null)
+                {
+                    return;
+                }
+
+                try
+                {
+                    player.IsMuted = !enabled;
+                    player.Volume = enabled ? Loaders.VideoWallpaperLoader.DefaultPlaybackVolume : 0d;
+                }
+                catch (Exception ex)
+                {
+                    // 播放器可能正在重建 Source：音量设置失败不影响画面
+                    HostDiagnostics.Log($"壁纸音量设置失败 host=0x{_hwnd:X}：{ex.GetType().Name}");
+                }
             }
         }
 

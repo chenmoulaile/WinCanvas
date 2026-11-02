@@ -40,6 +40,12 @@ public enum HotkeyAction
 
     /// <summary>开 / 关 WinTips NumLock 提示（即低级键盘钩子的启停）。</summary>
     ToggleWinTipsIndicator = 9,
+
+    /// <summary>
+    /// 开 / 关壁纸声音（v0.3.0 新增）。
+    /// 追加在枚举末尾：值即持久化标识，插入或重排会让旧配置的绑定错位。
+    /// </summary>
+    ToggleWallpaperAudio = 10,
 }
 
 /// <summary>

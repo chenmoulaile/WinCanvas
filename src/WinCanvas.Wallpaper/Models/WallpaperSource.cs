@@ -56,6 +56,14 @@ public sealed record WallpaperSource : IDisposable
     /// <summary>需要上报给用户的明确提示（例如"复杂场景仅显示封面"）；无提示为 null。</summary>
     public string? StatusMessage { get; init; }
 
+    /// <summary>
+    /// 本资源是否【可能发声】（v0.3.0 新增，供界面提示与声音开关判断）。
+    /// 视频层一律 true（视频素材普遍自带音轨）；pkg / 项目加载器按
+    /// project.json 的音频线索（supportsaudioprocessing、音量类属性、sound/ 目录）置位。
+    /// 与 <see cref="WinCanvas.Wallpaper.WallpaperService.AudioEnabled"/> 一起决定实际是否出声。
+    /// </summary>
+    public bool HasAudioTrack { get; init; }
+
     /// <summary>视频资源的磁盘路径（第二层直接文件，或 pkg 内嵌视频解包产物）。</summary>
     public string? VideoPath { get; init; }
 
