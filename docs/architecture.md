@@ -85,15 +85,26 @@ graph TB
 
 ## 3. 壁纸背景模块
 
-### 三层加载策略
+### 四层加载策略
 
-`WallpaperService.PrepareSource`（src/WinCanvas.Wallpaper/WallpaperService.cs）按扩展名分派；
+`WallpaperService.PrepareSource`（src/WinCanvas.Wallpaper/WallpaperService.cs）先问「是不是一个
+Wallpaper Engine 项目目录」，再按扩展名分派；
 扩展名口径统一取 `WallpaperFormats`（WP5 起的全仓库单一事实来源：图片 `.jpg/.jpeg/.png/.bmp/.gif/.webp`、
-视频 `.mp4/.m4v/.mov/.webm/.wmv/.mkv/.avi`、pkg `.pkg`——三层加载器、服务分派、ViewModel 类型推断、
+视频 `.mp4/.m4v/.mov/.webm/.wmv/.mkv/.avi`、pkg `.pkg`——加载器、服务分派、ViewModel 类型推断、
 文件选择器过滤全部引用它，不再各自维护字面列表）：
 
+0. **项目层（v0.3.0）** `WallpaperProjectLoader`：输入是**目录**时接管。读同目录 `project.json`
+   （`WallpaperProjectReader`，纯逻辑、永不抛）判定 `fileType` 后转交给下面三层之一 ——
+   `scene` → 该项目的 `scene.pkg` 走 pkg 层（解不开就退化到封面/预览图并说明原因）；
+   `video` → 视频层；`web` → **不渲染网页**，用 preview 图顶替并给出明确理由；
+   `audiofilter` / 无法识别 → `NotSupportedException` 带人话原因，绝不「猜一个能播的文件」。
+   三条纪律：① 返回的 `WallpaperSource.OriginalPath` 恒为**项目目录**（配置里记的、恢复时找的
+   都是目录，所以 `WallpaperFormats.IsAvailableBackgroundPath` 必须同时认目录与文件，
+   否则每条目录型壁纸都会在启动恢复时被误判成「文件已不存在」）；
+   ② `project.json` 是第三方文件，里面写的相对路径一律经 `ResolveRelative` 做目录穿越检查；
+   ③ 大小写不敏感（真实库里同时存在 `scene`/`Scene`/`Video`/`video`）。
 1. **图片层** `ImageWallpaperLoader`：ImageSharp 解码 → 目标显示器分辨率内等比 Lanczos 缩放（只缩小不放大；目标分辨率由 `WallpaperNativeMethods.TryGetMonitorResolutionForWindow` 提供）→ Bgra32 像素整块拷贝为 Bgra8 `SoftwareBitmap`。多帧 GIF（WP5）解码全部帧到 `WallpaperSource.ImageFrames`（每帧含画面与 GIF 帧延迟，1/100 秒换算；帧数受 256MB 像素预算 / 240 帧上限截断），首帧同时作为 `ImageFrame` 兼容既有渲染判定。
-2. **视频层** `VideoWallpaperLoader`：创建 `MediaPlayer`（Media Foundation 硬解），静音 + 循环，不自动播放，启停交给帧率状态机。
+2. **视频层** `VideoWallpaperLoader`：创建 `MediaPlayer`（Media Foundation 硬解），循环播放；**是否静音由 `AppConfig.WallpaperAudioEnabled` 决定（v0.3.0，默认静音）**，开启时按 `DefaultPlaybackVolume = 0.6` 播放。旧实现把 `IsMuted` 硬编码成 `true`，带配乐的壁纸没有任何办法出声。
 3. **pkg 层** `PkgWallpaperLoader`：`PackageReader` 读条目表 → 解包到内容 hash 命名的缓存目录（SHA256 取文件头 1MB，防抖期间重复解包直接复用）→ `.tex` 经 `TexReader` 解码为 PNG / 还原内嵌 mp4 → 场景分析：含 `.lua` 或 scene.json 引用 script 的复杂 SceneScript 场景降级为封面图；否则内嵌视频走视频层、最大 PNG 走图片层。
 
 ### 线程与渲染模型
@@ -225,7 +236,12 @@ flowchart LR
 - `MainWindow` code-behind 只做视觉装饰（Mica / 标题栏）、服务装配与退出前 `FlushAsync`；业务逻辑全部在 `MainViewModel`（src/WinCanvas.App/ViewModels/MainViewModel.cs:29）。
 - `WindowItemViewModel` 包装运行期 `WindowInfo` 快照与持久化 `WindowState` 档案：属性变更立即应用 Win32 并持久化；`RestoreAsync` 在选中时把档案值真正应用回窗口，保证「界面开关 / 档案 / 窗口真实状态」三者一致（WP3 的恢复管线复用同一方法）。
 - 主界面使用**镜像属性**（`SelectedIsTopmost` 等）而不是把控件 TwoWay 直接绑到可空 `Selected`，防止换选瞬间旧控件值误写进新选中项（src/WinCanvas.App/ViewModels/MainViewModel.cs:103）。
-- 设置区开关「启动时自动恢复窗口状态」使用手写属性（`ObservableObject.SetProperty`）而非 `[ObservableProperty]`：后者在 WinUI 3 场景会生成 MVVMTK0045 警告，新增字段会突破 26 条 warning 门禁基线。
+- 设置区开关统一改用 `[ObservableProperty] public partial T Xxx { get; set; }`（**partial 属性**形式）：
+  字段形式在 WinUI 3 场景会生成 MVVMTK0045（AOT/WinRT 下字段不可观测）警告，
+  v0.2.0 迁移时把 21 处字段全部转成 partial 属性。另有大量 MSB3277 程序集版本冲突警告
+  来自子模块 RePKG 的 `System.Drawing.Common` 引用，由仓库根 `Directory.Build.targets` 里
+  一条 `PackageReference Remove` 收口（**不改子模块源码**，否则子模块一更新就重新长出来）。
+  当前 `dotnet build -c Release` 为 0 警告 0 错误。
 - UIPI 权限引导（WP5）：`WindowItemViewModel` 四类属性操作与恢复管线的 catch 统一经 `ProcessElevation.DescribeFailure` 翻译——错误 5（ERROR_ACCESS_DENIED）给出「以管理员身份重启」专项引导，其余异常原语义透传；设置区「当前权限」文本（`ElevationStatusText`）来自 `ProcessElevation.IsElevated`（进程启动时检测一次并缓存）。
 
 ### 线程模型
@@ -237,6 +253,8 @@ flowchart LR
 | `WinCanvas.Wallpaper.Render` 后台线程 | 逐帧 `FrameTick` 回调、全屏检测（250ms 节流）、渲染状态上报 | `WallpaperRenderLoop`，BelowNormal 优先级 |
 | `WinCanvas.Wallpaper.HostPump` 专用消息线程 | 宿主窗口创建/销毁/跟随、WinEvent 钩子回调（WP1） | `WallpaperHostPump`，STA |
 | `WinCanvas.KeyboardHook` 专用消息线程 | LL 键盘钩子安装/回调/卸载，`GetMessageW` 循环空闲零 CPU（WP2） | `KeyboardIndicatorService`，Normal 优先级 |
+| `WinCanvas.SystemMessage` 专用消息线程 | 隐藏顶层窗口：托盘回调 `WM_TRAYICON`、全局热键 `WM_HOTKEY`、`WM_INVOKE` 封送通道（v0.2.0） | `MessagePumpWindow`，IsBackground |
+| 线程池（`Task.Run`） | 壁纸库扫描（真实库 96 条实测 27ms，仍放后台防目录在网络盘时卡 UI）、缩略图解码（`SemaphoreSlim(1,1)` 串行） | `MainViewModel.WallpaperLibrary` / `WallpaperLibraryItemViewModel`（v0.3.0） |
 
 跨线程数据保护：
 
@@ -261,7 +279,7 @@ flowchart LR
 
 ## 8. 自动化测试（WP4 / WP5）
 
-- `tests/WinCanvas.Core.Tests`（63 用例）与 `tests/WinCanvas.Wallpaper.Tests`（83 用例），xUnit + `dotnet test` 全绿；合计 146 例。
+- `tests/WinCanvas.Core.Tests`（63 用例）与 `tests/WinCanvas.Wallpaper.Tests`（123 用例），xUnit + `dotnet test` 全绿；合计 186 例。
 - v0.2.0 新增覆盖（此前这些路径 0 覆盖，缺陷因此长期存在）：配置服务的**活对象撕裂**与
   **CTS 世代竞态**、`.bak` 恢复与坏文件隔离、Dispose 兜底落盘；全局热键表的默认补齐 /
   用户值不被覆盖 / 三类校验 / 默认表自身无冲突 / 目录覆盖全部枚举值；
@@ -272,4 +290,55 @@ flowchart LR
 - 覆盖：配置防抖合并 / 原子写 / 无 BOM、窗口档案键语义、`WindowControlService` 失败语义（无效句柄抛 `Win32Exception`）与真实窗口行为冒烟、NumLock 去抖纯逻辑（`NumLockStateDebouncer`）、动态帧率状态机真值表、pkg 加载器纯逻辑（路径安全 / 场景判定 / 封面优先级）、宿主挂接矩形与 DPI 换算纯函数；WP5 新增：扩展名单一来源口径（`WallpaperFormats` 与两侧加载器一致性）、合成动画 GIF 的多帧 / 帧延迟 / 首帧别名往返、静态 WebP 解码、UIPI 错误 5 提权引导文案映射（`ProcessElevation`）。
 - 被测项目经 `InternalsVisibleTo` 对测试程序集开放 internal 纯逻辑（`SafeJoin` / `DetectComplexScene` / `FindCoverImage` / `WallpaperHostWindow` 矩形函数 / `NumLockStateDebouncer`）；公共 API 面不变。
 - 需要真实桌面会话的用例打 `[Trait("Category", "RequiresWindowsSession")]`，无头环境用 `--filter "Category!=RequiresWindowsSession"` 排除（xunit 2.9.2 无运行时跳过机制，结论见 WORKLOG WP4）。
-- 行为级验收（真实宿主上屏）由不入 sln 的诊断命令承担：`tools/Wp1AHostDiag`（WP1）、`tools/Wp5FormatDiag`（WP5：GIF 播放 / 暂停定格 / webp 上屏 / 权限引导）。
+- 行为级验收（真实宿主上屏）由不入 sln 的诊断命令承担：`tools/Wp1AHostDiag`（WP1）、`tools/Wp5FormatDiag`（WP5：GIF 播放 / 暂停定格 / webp 上屏 / 权限引导）、`tools/WvLibraryDiag`（v0.3.0：WE 库扫描形态统计 + 不可用原因直方图 + **逐条交叉校验「扫描说可用」与「加载器真的分派」**，不一致即非零退出）。
+
+## 9. 应用外壳与壁纸库（v0.2.0 / v0.3.0）
+
+### 为什么托盘与热键共用一个隐藏窗口
+
+`Shell_NotifyIcon` 与 `RegisterHotKey` 都要求「有一个窗口收消息」。各开一个就是两条常驻消息线程；
+合到一个 `WS_POPUP`、无 `WS_VISIBLE`、0×0 的隐藏窗口上，进程只多一条线程 + 一个 HWND。
+不用 message-only 窗口（`HWND_MESSAGE`）：它与托盘 `TrackPopupMenuEx` 的前台/焦点配合不可靠，
+是「菜单点了不关、鼠标穿透」这类老毛病的来源。
+
+三条线程纪律：
+
+1. **热键必须在创建该窗口的线程上注册** —— `WM_HOTKEY` 投给注册调用所在线程的队列，
+   从 UI 线程注册的话消息全去 UI 队列，本窗口的 WndProc 一条也收不到，
+   表现为「注册成功但按了没反应」。故 `ApplyAsync` 经 `InvokeAsync` 封送到泵线程。
+2. **封送用 PostMessage + TCS + 超时，不用 SendMessage** —— 泵线程此刻可能正卡在模态托盘菜单里，
+   同步消息会把 UI 线程一起挂住。超时（5 秒）后如实报告「热键未重新注册」，不静默假装成功。
+3. **WndProc 绝不让托管异常穿到非托管帧** —— 那会在消息派发路径上直接终结进程，
+   症状是「不知为什么程序就没了」。路由表用 `ConcurrentDictionary<IntPtr, …>` 而不是
+   `GWLP_USERDATA` + `GCHandle`：后者漏一次 `Free` 就是 use-after-free。
+
+`App.LogFatal` 会把每次应用绑定表的结果写一行进 `logs/crash.log`（成功 N 条 / 失败 M 条 + 原因）：
+用户收进托盘后看不到界面红字，日志是远程排障的唯一入口。
+
+### 单实例与关闭语义
+
+第二实例不再重复起界面：`Global\WinCanvas.App.SingleInstance` 互斥体 +
+`Global\WinCanvas.App.ShowMainWindow` 唤醒事件，第二个实例唤醒已有实例后自行退出
+（迁移前两个实例同写一份 `config.json` 互相覆盖，表现为「设置莫名回滚」）。
+有托盘时点 X = 收进托盘（`AppWindow.Closing` 里 `args.Cancel`），真退出走托盘菜单，由 `_isExiting` 放行。
+安装包 `AppMutex` 与互斥体同名，避免安装时「文件被占用」却不知道为什么。
+
+### 壁纸库的分层取舍
+
+- **可挂接判定只有一处真源**：`WallpaperEngineLibrary.Classify` 与
+  `WallpaperProjectLoader.Load` 的分派口径**刻意保持一致**，并由 `tools/WvLibraryDiag` 逐条交叉校验。
+  库里出现「看着能点、点下去报错」的条目比条目少几条糟糕得多。
+- **扫描深度限制一层**：WE 库的布局是 `<根>/<id>/project.json`；递归下去会撞上
+  shaders / materials / sound 这些素材目录，产出大量无意义条目。
+- **非 Steam 部署必须能手填**：自动探测只认 Steam（注册表 App 431960 / 标准路径 /
+  `libraryfolders.vdf` / `workshop/content/431960`），实测本机（壁纸项目放在
+  `E:\SublimeTextzip\wallpaper_engine\projects\myprojects`）自动探测结果为 **0 个根**，
+  手填该目录后 96 条全部可用。用户配置根优先、自动探测兜底、按路径忽略大小写去重。
+- **缩略图按需 + 串行**：WinUI 的 `BitmapImage` 会解码并**保留 GIF 的每一帧**，
+  面板里上百个条目同时构造预览会把私有内存从 48MB 顶到 247MB（实测）。
+  改为 View 的 `Loaded` 事件驱动（只处理滚进视口的条目）+ `SemaphoreSlim(1,1)` 串行解码 +
+  解码后立即缩到 120px 存 PNG + 封回 UI 线程 `SetSourceAsync`，回落到 102MB。
+- **音频开关是全局单值**：`AppConfig.WallpaperAudioEnabled` → `IWallpaperService.AudioEnabled`，
+  写入即时作用到正在播放的会话（`WallpaperSession.ApplyAudio` 在 `_tickGate` 下改
+  `IsMuted` / `Volume`）。「哪张壁纸该出声」的逐条目控制留给后续版本 ——
+  先把「默认不打扰、要听一键开」这条主路径做实。

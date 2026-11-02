@@ -1,6 +1,6 @@
 ﻿# WinCanvas
 
-高性能 Windows 窗口管理工具：对任意窗口实现置顶 / 透明 / 鼠标穿透 / 圆角，并支持独立壁纸背景（图片、视频、Wallpaper Engine 格式），内置 WinTips 操作提示。
+高性能 Windows 窗口管理工具：对任意窗口实现置顶 / 透明 / 鼠标穿透 / 圆角，并支持独立壁纸背景（图片、视频、Wallpaper Engine 的 `.pkg` 与**本地项目目录**），内置壁纸库自动检索、系统托盘、11 条可自定义全局快捷键与 WinTips 操作提示。
 
 - 平台：Windows 11 x64（最低目标 Windows 10 1809 / 10.0.17763，圆角功能需 Windows 11）
 - 技术栈：C# / .NET 10 / WinUI 3 / Win32
@@ -84,7 +84,7 @@ Win32 宿主窗口（类名 `WinCanvasWallpaperHost`），两条挂接路径自�
   暂停/恢复壁纸渲染、开/关 NumLock 提示、退出。
 - **关闭语义**：点窗口 X 在有托盘时**不再结束程序**，而是收进托盘（进程继续看着已设属性
   与壁纸宿主）；真退出走托盘菜单「退出」。
-- **全局快捷键**（`GlobalHotkeyService` + `HotkeyTable`）：10 项功能各一条可自定义组合键，
+- **全局快捷键**（`GlobalHotkeyService` + `HotkeyTable`）：11 项功能各一条可自定义组合键，
   程序在后台或收进托盘时同样生效。默认值：
 
   | 功能 | 默认组合 |
@@ -98,6 +98,7 @@ Win32 宿主窗口（类名 `WinCanvasWallpaperHost`），两条挂接路径自�
   | 清除所选窗口背景 | `Ctrl+Alt+X` |
   | 显示 / 隐藏主界面 | `Ctrl+Alt+C` |
   | NumLock 提示开关 | `Ctrl+Alt+N` |
+  | 壁纸声音开/关（v0.3.0） | `Ctrl+Alt+M` |
 
   改键方式：主界面「全局快捷键」区点对应行的组合键按钮，然后直接按下新组合
   （`Esc` 取消）。校验规则：**必须至少含 Ctrl 或 Alt**——全局热键抢在焦点窗口之前，
@@ -106,6 +107,44 @@ Win32 宿主窗口（类名 `WinCanvasWallpaperHost`），两条挂接路径自�
 - **单实例互斥**：第二个实例不再重复起界面，而是唤醒第一个实例的主窗口后自己退出
   （迁移前两实例同写一份 `config.json`，互相覆盖，表现为「设置莫名回滚」）。
 - **窗口搜索**：左侧列表上方可按标题 / 进程名 / 类名子串过滤。
+
+### Wallpaper Engine 项目目录与壁纸库（src/WinCanvas.Wallpaper，v0.3.0 新增）
+
+此前只吃单个 `.pkg` 文件，而 Wallpaper Engine 电脑端的**本地/创意工坊壁纸是一个目录**
+（`project.json` + `scene.pkg` / `video.mp4` / `web.json` + `preview.gif`），
+用户要么在文件选择器里找不到入口，要么选中的是预览图而不是壁纸本体。
+
+- **项目目录识别**（`WallpaperProjectReader` + `WallpaperProjectLoader`）：
+  读 `project.json` 判定形态并分派 —— `scene` → 解包同目录 `scene.pkg` 走 pkg 层；
+  `video` → 直接走视频层；`web` → **不渲染网页**，退化为预览图（明确提示原因，
+  因为网页壁纸需要浏览器/JS 运行时，不在本项目射程内）；`audiofilter` 与无法识别的类型
+  给出人话拒绝理由。`filetype` 大小写不敏感（真实库里同时存在 `scene`/`Scene`、`video`/`Video`）。
+  解析器**永不抛异常**：非法 JSON 返回 `ParseError` 描述，条目在库里标为不可用而不是让面板崩掉。
+- **安全**：`project.json` 是第三方文件，其中 `general.image` / `videoaudiopath` 之类
+  的相对路径在拼接前做目录穿越检查（`ResolveRelative`），`..\..\..\Windows\x` 一律拒绝。
+- **原路径归一**：项目条目的 `OriginalPath` 永远指向**项目目录**，因此配置里记的、
+  启动时恢复的也是目录 —— 修掉「目录型壁纸重启后被判成『背景文件已不存在』而不恢复」
+  （`WallpaperFormats.IsAvailableBackgroundPath` = 文件存在 **或** 是可用项目目录）。
+- **壁纸库自动检索**（`WallpaperEngineLibrary`）：`DetectRoots()` 依次试
+  注册表 `Steam App 431960` 的 InstallLocation（HKLM 64/32 + HKCU）、常见 Steam 安装路径、
+  `libraryfolders.vdf` 里的全部库、`workshop/content/431960`；探测不到就在界面上手填目录
+  （`WallpaperLibraryRoots` 存进配置，用户根优先、自动探测兜底、去重）。
+  扫描只下探一层子目录（WE 的库本身就是 `<根>/<id>/project.json`），
+  实测**真实库 96 条耗时 27ms**（78 个项目目录 + 18 个散装媒体文件；
+  scene 40 / video 33 / web 4 / 无法识别 1，其中 95 条可挂接）。
+  「扫描判定可用」与「加载器真的能用」由 `tools/WvLibraryDiag` 逐条交叉校验，防止列表里
+  出现点下去才报错的条目。
+- **缩略图**：库里条目上百个，构造时全解码会在打开面板的一瞬间把几十张 GIF 推进内存
+  （实测私有内存 48MB → **247MB**）。改由 View 的 `Loaded` 事件按需解码，
+  并用 `SemaphoreSlim(1,1)` 串行化 + 解码后立即缩到 120px 存 PNG 再回 UI 线程，
+  回落到 102MB。
+- **壁纸声音开关（默认关闭）**：迁移前 `VideoWallpaperLoader` 把 `IsMuted` 硬编码为 `true`，
+  带配乐的壁纸**没有任何办法出声**。现在有 `WallpaperAudioEnabled`（配置字段
+  `Version 2` 起持久化 + `Ctrl+Alt+M` 全局切换），开启后按 60% 音量播放
+  （`VideoWallpaperLoader.DefaultPlaybackVolume`，可在系统音量合成器里单独调），
+  关闭时 `IsMuted` 即时作用到**正在播放**的会话，不需要重新挂一次壁纸。
+  真实库里 77/96 条带音频线索（`project.json` 里出现 audio / volume / music / bgm 等关键字），
+  这些条目在面板上标 ♪，静音时在说明行里解释「为什么这个壁纸没声音」而不是让人以为是 bug。
 
 ### 其他
 
@@ -141,21 +180,27 @@ dotnet build WinCanvas.sln -c Debug
 # 产物位于 src/WinCanvas.App/bin/x64/Debug/net10.0-windows10.0.19041.0/win-x64/WinCanvas.App.exe
 ```
 
-> 验证手段：`dotnet build WinCanvas.sln`（0 error 为过）+ `dotnet test`（xUnit，两个测试项目共 146 个用例，见 `tests/`）：
+> 验证手段：`dotnet build WinCanvas.sln`（0 error 为过）+ `dotnet test`（xUnit，两个测试项目共 186 个用例，见 `tests/`）：
 > - `tests/WinCanvas.Core.Tests`（63）：配置持久化（防抖合并 / 原子写 / 无 BOM / **活对象撕裂** /
 >   **CTS 世代竞态** / `.bak` 恢复 / 坏文件隔离 / Dispose 兜底落盘）、窗口档案键语义、
 >   `WindowControlService` 失败语义与真实窗口行为冒烟、NumLock 去抖纯逻辑、UIPI 错误 5 的提权引导文案映射、
 >   **全局热键表**（默认补齐 / 用户值不被覆盖 / 组合键文本化 / 三类校验 / 默认表自身无冲突 / 目录覆盖全部动作）；
-> - `tests/WinCanvas.Wallpaper.Tests`（83）：动态帧率状态机真值表、pkg 加载器纯逻辑（路径安全 / 场景判定 / 封面优先级）、
+> - `tests/WinCanvas.Wallpaper.Tests`（123）：动态帧率状态机真值表、pkg 加载器纯逻辑（路径安全 / 场景判定 / 封面优先级）、
 >   宿主挂接矩形与 DPI 换算纯函数、扩展名单一来源口径（`WallpaperFormats`）、合成动画 GIF 的多帧解码与帧延迟往返、
->   静态 WebP 解码、**壁纸呈现路径分派**（`Kind` 与 `HasVideoPlayer` 互不蕴含 —— 钉住 pkg 内嵌视频不再被漏判）。
+>   静态 WebP 解码、**壁纸呈现路径分派**（`Kind` 与 `HasVideoPlayer` 互不蕴含 —— 钉住 pkg 内嵌视频不再被漏判）、
+>   **WE 项目兼容**（`project.json` 大小写 / 中文与方括号文件名 / 目录穿越拒绝 / 非法 JSON 不抛 /
+>   四种形态的加载器分派与降级理由 / 扫描分类与去重 / `IsProjectDirectory` /
+>   音频线索关键字判定 / `IsMuted` 与音量随开关变化、默认音量 < 1.0）、
+>   **WinTips 外挂可启动性探测**（`runtimeconfig.json` 单数 `framework` 与复数 `frameworks[]`
+>   两种写法、必须挑 `Microsoft.WindowsDesktop.App` 而非基础运行时、self-contained 同级 `coreclr.dll`、
+>   探测失败绝不启动进程而是给出原因）。
 >   需要真实桌面会话的用例打 `[Trait("Category", "RequiresWindowsSession")]`，无头环境用
 >   `dotnet test --filter "Category!=RequiresWindowsSession"` 排除（不判失败）。
 >   **注意**：这批用例在无会话环境下是【构造失败】而非跳过（有意设计，见该测试类注释），
 >   所以 CI 的默认测试步骤必须带 `--filter`。
 >
 > CI：`.github/workflows/build-and-test.yml`（`windows-latest`，构建 + headless 测试 +
-> 诊断工具编译检查 + 发布产物齐备校验 + 安装包编译）。`tools/` 下 4 个诊断工程不在
+> 诊断工具编译检查 + 发布产物齐备校验 + 安装包编译）。`tools/` 下 5 个诊断工程不在
 > `WinCanvas.sln` 里，由 CI 单独编译以防无声腐烂。
 
 ## 使用说明
@@ -188,7 +233,9 @@ dotnet build WinCanvas.sln -c Debug
 - [风险评估](docs/risk.md)
 - [第三方组件与许可证声明](THIRD-PARTY-NOTICES.md)
 
-## v0.2.0 新增内容的已知限制
+## v0.2.0 / v0.3.0 新增内容的已知限制
+
+### 托盘与全局快捷键（v0.2.0）
 
 - **全局快捷键可能被其它程序占用**：注册失败（Win32 错误 1409）时只有那一条不生效，
   界面会标出「已被系统或其它程序占用，请换一个组合」，其余热键不受影响。
@@ -198,5 +245,28 @@ dotnet build WinCanvas.sln -c Debug
   需要常驻可见请在系统设置「其它系统托盘图标」里把它拖出。
 - **托盘与热键共用一条消息线程**：该线程若被模态菜单长时间占用，热键注册会延后；
   注册调用带 5 秒超时并在超时后如实报告，不会静默假装成功。
+- **注册结果只落到诊断日志**：`%LOCALAPPDATA%\WinCanvas\logs\crash.log` 里每次应用绑定表
+  会写一行「成功 N 条，失败 M 条（原因）」。用户收进托盘后看不到界面红字时，这是唯一入口。
+
+### Wallpaper Engine 兼容与壁纸库（v0.3.0）
+
+- **网页型（`web`）壁纸不渲染**：这类壁纸靠浏览器 + JS 运行时（常带 Steam Overlay
+  与 CEF 自定义 API），本项目不内嵌浏览器内核，选中后**只显示 preview 图并说明原因**。
+  真实库里 4/96 条属于这种。
+- **`audiofilter` 与无法识别的项目类型直接拒绝**并给出理由，不做「猜一个能播的文件」——
+  猜错时用户看到的是莫名其妙的静态图，比一条明确失败更难归因。真实库里 1/96 条属于这种。
+- **声音开关只覆盖视频层音轨**：`video` 型项目与散装视频文件的音轨受
+  `WallpaperAudioEnabled` 控制；`scene`（pkg）里打包的音频资源当前不播放
+  （repkg 解出的是纹理与视频，音频播放在本项目射程外）。「含音频线索」标记
+  来自 `project.json` 的关键字判断，代表**该壁纸在 WE 里可能发声**，不代表本程序能播。
+- **自动探测只覆盖 Steam 安装**：`DetectRoots()` 认注册表 `Steam App 431960`、
+  标准 Steam 路径与 `libraryfolders.vdf`。非 Steam 部署（自行移动到别的盘、
+  或用 `projects/myprojects` 直接开发的工作副本）**探测结果为 0 个根** ——
+  实测本机即如此（96 条的库、自动探测 0 根），界面会明确提示手填目录，
+  填进去之后与自动探测到的根完全等价。
+- **扫描只下探一层**：WE 的库布局是 `<根>/<id>/project.json`，因此不递归；
+  把项目再套一层子目录的自制结构不会被发现（也不会误报，属于「看不到」而非「看错」）。
+- **缩略图串行解码**：库里条目上百个时缩略图逐个出现（一次只解一张），
+  这是刻意的内存取舍 —— 并行解码实测把私有内存从 48MB 顶到 247MB。
 - **仓库根尚无自身 LICENSE 文件**：两个子模块均为 MIT（不含传染性许可证），
   但本项目自身的授权由维护者决定，见 `THIRD-PARTY-NOTICES.md`。

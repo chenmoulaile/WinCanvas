@@ -503,7 +503,14 @@ public static class ProcessElevation
 
 ```json
 {
-  "Version": 1,
+  "Version": 2,
+  "AutoRestoreOnStartup": false,
+  "WinTipsIndicatorEnabled": true,
+  "WallpaperAudioEnabled": false,
+  "WallpaperLibraryRoots": [
+    "E:\\SublimeTextzip\\wallpaper_engine\\projects\\myprojects"
+  ],
+  "Hotkeys": [],
   "Windows": [
     {
       "Key": "notepad|无标题 - 记事本",
@@ -522,10 +529,19 @@ public static class ProcessElevation
 }
 ```
 
+> `Hotkeys: []` 是正常状态：界面与注册用的绑定表由 `HotkeyTable.Normalize` 在加载后补齐，
+> 只有用户真的改过某条才会作为一条记录写进配置（「删掉一条」= 回到默认，不是关掉它）。
+> `BackgroundPath` 可以是**目录**（Wallpaper Engine 项目），恢复管线用
+> `WallpaperFormats.IsAvailableBackgroundPath` 判定可用性，不再按「文件必须存在」一刀切。
+
 行为要点（src/WinCanvas.Core/Services/ConfigurationService.cs）：
 
 - 首次运行文件不存在 → 返回默认配置；JSON 损坏（`JsonException`）→ 回退默认配置，不崩溃。
 - `Update` 后 500ms 防抖合并写盘；应用退出时 `MainWindow.Closed` 调同步的 `Flush()` 强制落盘（消息循环即将退出，异步续延可能没有机会执行）。
+- 写盘是**原子**的：先写随机名 `.tmp` → `Flush(flushToDisk: true)` → `File.Replace(temp, target, target + ".bak")`。
+  读盘顺序为 主文件 → `.bak` → 把坏文件隔离成 `config.json.corrupt-<时间戳>`，任何一步都不抛。
+- 磁盘失败（占用 / 无权限）不吞掉：`LastSaveError` 暴露最近一次异常，`ConfigDiagnostics`
+  写 `%LOCALAPPDATA%\WinCanvas\logs\config-diag.log`（超 256KB 滚动）。
 - `ConfigurationService(string configFilePath)` 构造可注入路径（测试用）；`ConfigFilePath` 属性供诊断。
 - `ConfigurationService(string configFilePath, TimeSpan debounceDelay)` 构造可同时注入防抖间隔（WP4，测试用；非正值抛 `ArgumentOutOfRangeException`），生产构造固定 500ms。
 
@@ -638,3 +654,75 @@ public bool HasVideoPlayer => Player is not null;
 - 安装包 `AppMutex` 与互斥体同名（去掉 `Global\` 前缀的形式）。
 - 有托盘时点窗口 X = 收进托盘（`AppWindow.Closing` 里 `args.Cancel = true`）；
   真退出走托盘菜单，由 `_isExiting` 放行 Closing。
+
+## 8. v0.3.0 新增公开 API
+
+> 同样按符号描述。这一批的由来：兼容 Wallpaper Engine **电脑端的本地项目目录**
+> （不是单个 `.pkg`）、壁纸库自动检索、壁纸声音开关（默认关闭）。
+
+### 8.1 Wallpaper：项目描述与读取器
+
+`src/WinCanvas.Wallpaper/Models/WallpaperProjectDescriptor.cs`
+
+| 符号 | 签名 | 语义 |
+| --- | --- | --- |
+| `WallpaperProjectKind` | `enum { Unknown = 0, Scene = 1, Video = 2, Web = 3, AudioFilter = 4 }` | `project.json` 的 `fileType` 归类；`Unknown` 是「读不懂」的安全默认 |
+| `WallpaperProjectDescriptor` | `ProjectDirectory` / `Title` / `Kind` / `MainFilePath` / `PreviewPath` / `WorkshopId` / `ContentRating` / `MightHaveAudio` / `AudioPropertyNames` / `ParseError`（均为 `init` 只读） | 一个项目的解析结果；`ParseError != null` 表示读到了但读不懂 |
+| `WallpaperProjectReader.HasProjectFile(directory)` | `static bool` | 目录里是否有 `project.json` |
+| `WallpaperProjectReader.Read(directory)` | `static WallpaperProjectDescriptor?` | **永不抛**：缺文件 / 非法 JSON / 编码问题一律返回 null 或带 `ParseError` 的结果 |
+| `WallpaperProjectReader.ParseKind(string?)` | `static WallpaperProjectKind` | **大小写不敏感**（真实库里同时存在 `scene`/`Scene`、`video`/`Video`、`web`/`Web`） |
+| `WallpaperProjectReader.ResolveRelative(directory, relative)` | `static string?` | 第三方文件的相对路径拼接前做目录穿越检查，越界返回 null |
+
+私有实现细节（不出现在公开面上，但决定行为）：`AnalyzeAudio` 用关键字命中
+（audio / volume / music / bgm / sfx / sound / voice / ambience / ambient）判定
+「该壁纸在 WE 里可能发声」并把命中的属性名记进 `AudioPropertyNames`（可解释、可测）；
+`FindPreviewFallback` 在 `project.json` 没写预览时找 `preview.gif` 一类兜底文件。
+
+### 8.2 Wallpaper：项目加载器与库检索
+
+| 符号 | 职责 |
+| --- | --- |
+| `Loaders.WallpaperProjectLoader.IsProjectDirectory(string?)` | 判定「这是一个 WE 项目目录」（目录 + 有 `project.json`） |
+| `Loaders.WallpaperProjectLoader.Load(projectDirectory, audioEnabled = false)` | 按 `fileType` 分派：scene → 同目录 `scene.pkg` 交给 `PkgWallpaperLoader`（解不开则退化到封面）；video → `VideoWallpaperLoader`；web → 预览图并附「不渲染网页」说明；audiofilter / unknown → `NotSupportedException` 带人话理由。返回的 `WallpaperSource.OriginalPath` **恒为项目目录** |
+| `WallpaperEngineLibrary.DetectRoots()` | 注册表 `Steam App 431960` InstallLocation（HKLM 64 位 / 32 位视图 + HKCU）→ 标准 Steam 路径 → `libraryfolders.vdf` 全部库 → `workshop/content/431960`；返回去重后的候选根（可能为空，非 Steam 部署就是这样） |
+| `WallpaperEngineLibrary.Scan(roots, includeLooseMedia = true, ct)` | 只下探一层子目录（递归会撞上 shaders / materials / sound 这些素材文件夹并产生大量无意义条目）；`Classify` 与加载器的分派口径**刻意一致**（「列表里说可用」=「点下去真的能挂上」）；`includeLooseMedia` 时把根目录里的散装图片/视频/.pkg 也收进来；按路径（忽略大小写）去重 |
+| `WallpaperEngineLibrary.WallpaperLibraryEntry` | `sealed record (Path, Title, WallpaperLibraryEntryKind EntryKind, PreviewPath, MightHaveAudio, IsUsable, UnusableReason)`；`EntryKind` ∈ `{ Project, MediaFile }`；不可用条目的 `UnusableReason` 是直接能显示给用户的话 |
+
+### 8.3 Wallpaper：格式与音频
+
+- `WallpaperFormats.IsAvailableBackgroundPath(string?)` —— `File.Exists(path) || WallpaperProjectLoader.IsProjectDirectory(path)`。
+  修掉的缺陷：恢复管线原先只问 `File.Exists`，于是**每一条目录型壁纸都被判成「背景文件已不存在」而跳过**。
+- `VideoWallpaperLoader.Load(path, audioEnabled = false)` + `VideoWallpaperLoader.DefaultPlaybackVolume = 0.6`。
+  迁移前 `IsMuted` 硬编码 `true`，用户没有任何办法让带配乐的壁纸出声。
+- `IWallpaperService.AudioEnabled { get; set; }` —— 写入即时作用到**正在播放**的会话
+  （`WallpaperSession.ApplyAudio` 在 `_tickGate` 下改 `MediaPlayer.IsMuted` / `Volume`），不需要重新挂一次。
+- `WallpaperSource.HasAudioTrack { get; init; }` —— 界面据此决定要不要画 ♪ 标记。
+
+### 8.4 App：壁纸库与声音的界面状态
+
+`ViewModels/MainViewModel.WallpaperLibrary.cs`（partial）：
+`LibraryItems` / `FilteredLibraryItems` / `LibraryFilter` / `IsLibraryScanning` / `CanScanLibrary` /
+`LibraryStatusText` / `LibraryRootsText` / `WallpaperAudioEnabled` / `AudioHintText`，
+命令 `ScanLibrary` / `AddLibraryRoot` / `RemoveLibraryRoot` / `ApplyLibraryItem`，
+以及 `InitializeWallpaperLibrary()`（由 `InitializeAsync` 在配置加载后调用）。
+
+`ViewModels/WallpaperLibraryItemViewModel.cs`：缩略图**按需 + 串行**解码
+（`EnsurePreview()` 由 View 的 `Loaded` 触发，`SemaphoreSlim(1,1)` 串行，
+解码后立刻缩到 120px 存 PNG 再封回 UI 线程）。
+理由与实测数据：WinUI 的 `BitmapImage` 会解码并**保留 GIF 的每一帧**，
+构造时全量解码让私有内存 48MB → 247MB；改后 102MB。
+
+### 8.5 Wallpaper：WinTips 外挂可启动性探测
+
+`src/WinCanvas.Wallpaper/WinTipsRuntimeProbe.cs`（`internal static bool IsLaunchable(string? exePath, out string? reason)`）：
+
+1. 同级存在 `coreclr.dll` → self-contained，直接可启动；
+2. 否则解析 `WinTips.runtimeconfig.json`，**复数 `frameworks[]` 必须挑 `Microsoft.WindowsDesktop.App`**
+   （误取基础运行时条目会算出错误的版本要求），并兼容单数 `framework` 与只给 `tfm` 的写法；
+3. 再到 `DOTNET_ROOT` / `ProgramFiles(x86)` / `ProgramFiles` 下找同主版本的
+   `dotnet\shared\Microsoft.WindowsDesktop.App\<ver>`。
+
+任何一步失败都不抛，只给出 `reason`；`WinTipsIntegrationService` 因此不再「先 Start 再看异常」，
+`IsWinTipsAvailable` 现在要求**真的能启动**。不可用时 NumLock 提示回退为
+**托盘气泡**（`TrayIconService.ShowBalloon`），没有托盘才退回主界面 InfoBar ——
+本工具的典型用法是主窗口收在托盘里，只写 InfoBar 等于把提示写在一个看不见的窗口上。
