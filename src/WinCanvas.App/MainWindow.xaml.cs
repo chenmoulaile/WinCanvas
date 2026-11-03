@@ -68,7 +68,7 @@ public sealed partial class MainWindow : Window
         bool shellOk = ViewModel.AttachShell(
             showMainWindow: () => DispatcherQueue.TryEnqueue(ShowMainWindow),
             hideMainWindow: () => DispatcherQueue.TryEnqueue(HideToTray),
-            isMainWindowVisible: () => _isVisibleToUser,
+            isMainWindowVisible: () => IsVisibleToUser,
             out string? shellError);
 
         if (!shellOk)
@@ -161,16 +161,13 @@ public sealed partial class MainWindow : Window
         {
             if (AppWindow.Presenter is OverlappedPresenter presenter)
             {
-                // 最小化到托盘时 IsMinimized 为真，先还原
-                if (presenter.State == OverlappedPresenterState.Minimized)
-                {
-                    presenter.Restore();
-                }
-
                 presenter.IsMinimizable = true;
             }
 
-            Activate();
+            // 统一走 ShowMainWindow（Show + 还原最小化 + Activate 是一整套）。
+            // 唤醒路径自己只调 Activate() 的话，窗口从隐藏态回到可见态这件事
+            // 就不会被任何一处状态记录到，显示/隐藏开关因此单向卡死。
+            ShowMainWindow();
         }
         catch (Exception ex)
         {
@@ -195,13 +192,45 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    // ===== 主导航（窗口与壁纸 / 设置 / 关于） =====
+
+    /// <summary>
+    /// 切换页面。三块内容都在同一棵视觉树里，只改可见性 ——
+    /// 用 Frame.Navigate 换页会把首页的 ListView 选中态、壁纸预览控件、
+    /// 库面板的滚动位置全部重建，而那些状态正是用户期望「切回来还在」的。
+    /// </summary>
+    private void OnNavSelectionChanged(Microsoft.UI.Xaml.Controls.NavigationView sender,
+        Microsoft.UI.Xaml.Controls.NavigationViewSelectionChangedEventArgs args)
+    {
+        // 首帧解析到 NavigationViewItem 的 IsSelected=True 时就会触发本事件，
+        // 那时 XAML 后半页的字段还没被 InitializeComponent 赋值 —— 忽略这一次，
+        // 默认可见性（首页显示、另两页 Collapsed）本就是我们要的初始态。
+        if (HomePage is null || SettingsPanel is null || AboutPanel is null)
+        {
+            return;
+        }
+
+        string tag = (args.SelectedItem as Microsoft.UI.Xaml.Controls.NavigationViewItem)?.Tag as string ?? "home";
+
+        HomePage.Visibility = tag == "home" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsPanel.Visibility = tag == "settings" ? Visibility.Visible : Visibility.Collapsed;
+        AboutPanel.Visibility = tag == "about" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     // ===== 托盘 / 窗口可见性 =====
 
     /// <summary>
-    /// 主窗口当前对用户是否可见。用 AppWindow.IsVisible 而不是 Window.Visibility：
-    /// 前者反映「任务栏与屏幕上是否真的有这个窗口」，正是托盘菜单文案要的判断。
+    /// 主窗口当前对用户是否可见。
+    ///
+    /// 【必须】每次现问 <c>AppWindow.IsVisible</c>，不要镜像成布尔字段：
+    /// v0.3.0 就是用一个手工同步的 <c>_isVisibleToUser</c> 判断的，而第二实例唤醒走
+    /// <see cref="ShowFromSecondInstance"/>，它只 Activate() 不碰这个字段 → 字段与真实
+    /// 状态永久相反。后果是「显示/隐藏」这个动作单向卡死：
+    /// 字段卡在 false 时按 <c>Ctrl+Alt+C</c> 只会重复调 Show()（空操作，窗口关不掉）；
+    /// 卡在 true 时按它只会重复调 Hide()（窗口再也叫不回来，看起来就是「程序没界面」）。
+    /// 托盘菜单文案与左键单击共用同一个判断，所以三处一起坏。
     /// </summary>
-    private bool _isVisibleToUser = true;
+    private bool IsVisibleToUser => AppWindow.IsVisible;
 
     /// <summary>把主窗口带回前台。</summary>
     private void ShowMainWindow()
@@ -209,7 +238,6 @@ public sealed partial class MainWindow : Window
         try
         {
             AppWindow.Show();
-            _isVisibleToUser = true;
 
             if (AppWindow.Presenter is OverlappedPresenter presenter
                 && presenter.State == OverlappedPresenterState.Minimized)
@@ -231,7 +259,6 @@ public sealed partial class MainWindow : Window
         try
         {
             AppWindow.Hide();
-            _isVisibleToUser = false;
         }
         catch (Exception ex)
         {

@@ -242,7 +242,23 @@ flowchart LR
   来自子模块 RePKG 的 `System.Drawing.Common` 引用，由仓库根 `Directory.Build.targets` 里
   一条 `PackageReference Remove` 收口（**不改子模块源码**，否则子模块一更新就重新长出来）。
   当前 `dotnet build -c Release` 为 0 警告 0 错误。
-- UIPI 权限引导（WP5）：`WindowItemViewModel` 四类属性操作与恢复管线的 catch 统一经 `ProcessElevation.DescribeFailure` 翻译——错误 5（ERROR_ACCESS_DENIED）给出「以管理员身份重启」专项引导，其余异常原语义透传；设置区「当前权限」文本（`ElevationStatusText`）来自 `ProcessElevation.IsElevated`（进程启动时检测一次并缓存）。
+- UIPI 权限引导（WP5）：`WindowItemViewModel` 四类属性操作与恢复管线的 catch 统一经 `ProcessElevation.DescribeFailure` 翻译——错误 5（ERROR_ACCESS_DENIED）给出「以管理员身份重启」专项引导，其余异常原语义透传；设置页「当前权限」文本（`ElevationStatusText`）来自 `ProcessElevation.IsElevated`（进程启动时检测一次并缓存）。
+
+### 页面划分（v0.3.1）
+
+主窗口用 `NavigationView` 分三页：**窗口与壁纸**（首页，内容仍在 `MainWindow.xaml` 内）、
+**设置**（`Pages/SettingsPage`）、**关于**（`Pages/AboutPage`）。
+
+- **三页共享同一个 `MainViewModel`**：设置页通过一个 `DependencyProperty`（`ViewModelProperty`）
+  接收主窗口那一份实例，而不是自己 `new` 一个。快捷键注册、托盘动作、配置持久化都挂在这份实例上，
+  页面再持一份等于两个实例抢同一批全局资源（同名热键第二个必注册失败 1409）+ 两份配置互相覆盖。
+- **换页用可见性切换，不用 `Frame.Navigate`**：导航换页会销毁重建首页视觉树，
+  连带丢掉窗口列表的选中态、壁纸预览控件（`WallpaperPreviewController` 持有其元素引用）与库面板滚动位置。
+- **`SelectionChanged` 首帧空引用防护**：解析 `IsSelected="True"` 时事件就会触发，
+  那时 XAML 后半页的具名字段还没被 `InitializeComponent` 赋值，处理器必须先返回。
+- **关于页不走绑定**：它展示的是进程级只读元数据（`Services/AppInfo`），
+  构造时直接填控件。理由是这一页在「程序能打开但功能全坏」时才最有用，依赖越少越好；
+  图标从程序目录的 `WinCanvas.ico` 按文件路径读，不用 `ms-appx`（非打包部署没有包 URI 方案）。
 
 ### 线程模型
 
@@ -323,6 +339,8 @@ v0.3.0 就在这里白折腾过一轮：`RegisterHotKey` 11/11 成功、`WM_HOTK
 最后用一个独立探针进程（同样的注入代码 + 正确的 40 字节）收到 3/3 才定位到脚本。
 所以：**注入函数返回值必须检查**，并且判断「热键是否生效」要看副作用（窗口可见性、
 `config.json` 里的字段翻转），不要只看有没有报错。
+这套注入代码已收进仓库：`tools/HotkeyInjector`（`inject` 打键 / `probe` 自注册自检，
+启动时打印 `INPUT_SIZE` 自证 `cbSize` 传对），配套回归见 `tools/verify-showhide.ps1`。
 
 ### 单实例与关闭语义
 
@@ -331,6 +349,23 @@ v0.3.0 就在这里白折腾过一轮：`RegisterHotKey` 11/11 成功、`WM_HOTK
 （迁移前两个实例同写一份 `config.json` 互相覆盖，表现为「设置莫名回滚」）。
 有托盘时点 X = 收进托盘（`AppWindow.Closing` 里 `args.Cancel`），真退出走托盘菜单，由 `_isExiting` 放行。
 安装包 `AppMutex` 与互斥体同名，避免安装时「文件被占用」却不知道为什么。
+
+**可见性判断必须现问，不要镜像成字段（v0.3.1 修的真实故障）**：
+`MainWindow` 曾以手工同步的 `_isVisibleToUser` 布尔作为「窗口是否可见」的依据，
+而第二实例唤醒走 `ShowFromSecondInstance()` —— 它只 `Activate()`，从不更新这个字段。
+于是唤醒一次之后，字段与真实状态永久相反，「显示/隐藏」动作单向卡死：
+
+| 字段卡在 | 真实状态 | 按 `Ctrl+Alt+C` 的效果 | 用户看到的现象 |
+| --- | --- | --- | --- |
+| `false` | 窗口可见 | 反复调 `Show()`（空操作） | 「快捷键失灵，窗口关不掉」 |
+| `true` | 窗口已隐藏 | 反复调 `Hide()`（空操作） | 「界面再也叫不回来，像程序没界面」 |
+
+托盘左键与托盘菜单文案共用同一个判断，所以三处一起坏。
+现在改为每次读 `AppWindow.IsVisible`（唯一真源），并让唤醒路径统一走
+`ShowMainWindow()`，不再各写半套。回归脚本要覆盖的是**「唤醒之后再按一次」**
+这一步（`tools/verify-showhide.ps1` 的 STEP4）—— 只测「启动后按一次」永远发现不了它。
+配套的 `tools/HotkeyInjector` 是注入器兼自检探针：先用它注册一个自己的热键确认
+系统链路通不通，再去怀疑被测程序。
 
 ### 壁纸库的分层取舍
 

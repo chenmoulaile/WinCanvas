@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 全局热键注入器 / 自检探针（v0.3.1）。
+         与其它 tools/ 下的诊断工程同路线：不加入 WinCanvas.sln
+         （不占基线 warning 门禁口径），单独 dotnet run 驱动，
+         由 CI 的「诊断工具编译检查」一步负责防腐烂。
+         不引用任何产品工程：它测的是「系统输入链路通不通」，
+         必须能在被测程序完全不参与的情况下独立成立。 -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>HotkeyInjector</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+</Project>
