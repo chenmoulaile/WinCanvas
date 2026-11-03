@@ -148,8 +148,15 @@ jobs:
           }
           if (-not $iscc) { Write-Error 'Inno Setup 不可用（既不在镜像里也没装上）'; exit 1 }
 
-          & $iscc "/DSourceDir=publish-out" "/DMyAppVersion=$version" installer\WinCanvas.iss
+          # SourceDir 必须是【绝对路径】：ISCC 把 /D 传进去的相对路径按 .iss 文件所在目录
+          # 解析，`publish-out` 会变成 installer\publish-out 并报
+          # “No files found matching ...publish-out\*”（v0.3.0 实测踩过）。
+          $src = (Resolve-Path publish-out).Path
+          & $iscc "/DSourceDir=$src" "/DMyAppVersion=$version" installer\WinCanvas.iss
           if ($LASTEXITCODE -ne 0) { Write-Error "ISCC 退出码 $LASTEXITCODE"; exit 1 }
+          Get-ChildItem installer/Output/WinCanvas-setup-*.exe | ForEach-Object {
+            Write-Host ("安装包 = {0} ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB))
+          }
           "setup_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: 打包便携版 zip
@@ -179,7 +186,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = $env:GITHUB_REF_NAME
+          $props = Get-Content Directory.Build.props -Raw
+          $version = [regex]::Match($props, '<WinCanvasVersion>([^<]+)</WinCanvasVersion>').Groups[1].Value
+          # 标签推送用标签名；workflow_dispatch 时 GITHUB_REF_NAME 是分支名，
+          # 直接拿去当 tag_name 会 422（标签不存在），所以回落到 v<版本>。
+          $tag = if ($env:GITHUB_EVENT_NAME -eq 'push') { $env:GITHUB_REF_NAME } else { "v$version" }
+          Write-Host "发布标签 = $tag（event=$env:GITHUB_EVENT_NAME）"
           $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
           $api = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
 
