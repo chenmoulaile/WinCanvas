@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="WinCanvas.App.Pages.AboutPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- 关于页：程序身份 + 运行环境 + 数据位置 + 许可。
+         设计取向是「出问题时代码不在手边，这一页要能自证」：
+         版本号带提交哈希、写明是否 self-contained、给出配置与日志的绝对路径，
+         并有一键打开目录的入口 —— 反馈问题时最常被问到的就是这三样。 -->
+    <ScrollViewer Padding="24,8,24,24">
+        <StackPanel Spacing="12" MaxWidth="860" HorizontalAlignment="Stretch">
+
+            <TextBlock Text="关于"
+                       Style="{ThemeResource SubtitleTextBlockStyle}" />
+
+            <!-- ===== 身份 ===== -->
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8" Padding="20">
+                <Grid ColumnSpacing="20">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Image x:Name="AppIconImage"
+                           Width="72" Height="72"
+                           VerticalAlignment="Top"
+                           Stretch="Uniform"
+                           AutomationProperties.Name="WinCanvas 应用图标" />
+
+                    <StackPanel Grid.Column="1" Spacing="6">
+                        <TextBlock Text="WinCanvas"
+                                   Style="{ThemeResource TitleTextBlockStyle}" />
+                        <TextBlock Text="窗口管理与壁纸背景工具"
+                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                   Opacity="0.8" />
+                        <TextBlock Text="置顶 / 透明 / 鼠标穿透 / 圆角 + 独立壁纸背景（图片、视频、Wallpaper Engine 项目）+ 系统托盘与全局快捷键"
+                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                   Opacity="0.7" TextWrapping="Wrap" />
+                        <TextBlock x:Name="VersionLine"
+                                   Margin="0,8,0,0"
+                                   Style="{ThemeResource BodyTextBlockStyle}" />
+                        <TextBlock x:Name="CommitLine"
+                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                   Opacity="0.7" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ===== 运行环境 ===== -->
+            <TextBlock Text="运行环境"
+                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8" Padding="16">
+                <StackPanel Spacing="8">
+                    <TextBlock x:Name="RuntimeLine" Style="{ThemeResource CaptionTextBlockStyle}" TextWrapping="Wrap" />
+                    <TextBlock x:Name="SdkLine" Style="{ThemeResource CaptionTextBlockStyle}" TextWrapping="Wrap" />
+                    <TextBlock x:Name="OsLine" Style="{ThemeResource CaptionTextBlockStyle}" TextWrapping="Wrap" />
+                    <TextBlock x:Name="DeployLine" Style="{ThemeResource CaptionTextBlockStyle}" TextWrapping="Wrap" />
+                    <TextBlock x:Name="ElevationLine" Style="{ThemeResource CaptionTextBlockStyle}" TextWrapping="Wrap" />
+                    <TextBlock Text="圆角功能需要 Windows 11（build 22621+）；较低版本其余功能照常，背景材质自动降级为亚克力 / 纯色。"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.6" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <!-- ===== 数据位置 ===== -->
+            <TextBlock Text="数据位置"
+                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8" Padding="16">
+                <StackPanel Spacing="10">
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="配置（窗口档案 / 快捷键 / 壁纸库目录）"
+                                   Style="{ThemeResource CaptionTextBlockStyle}" Opacity="0.7" />
+                        <TextBlock x:Name="ConfigPathLine" Style="{ThemeResource BodyTextBlockStyle}" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="诊断日志（崩溃、热键注册、恢复管线、宿主挂接）"
+                                   Style="{ThemeResource CaptionTextBlockStyle}" Opacity="0.7" />
+                        <TextBlock x:Name="LogPathLine" Style="{ThemeResource BodyTextBlockStyle}" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="壁纸解包缓存（Wallpaper Engine .pkg 解出来的图片与视频，可能占用数 GB）"
+                                   Style="{ThemeResource CaptionTextBlockStyle}" Opacity="0.7" />
+                        <TextBlock x:Name="CachePathLine" Style="{ThemeResource BodyTextBlockStyle}" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Click="OnOpenConfigFolderClick" Content="打开配置目录"
+                                AutomationProperties.Name="在资源管理器中打开配置目录" />
+                        <Button Click="OnOpenLogFolderClick" Content="打开日志目录"
+                                AutomationProperties.Name="在资源管理器中打开诊断日志目录" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ===== 许可与来源 ===== -->
+            <TextBlock Text="许可与第三方组件"
+                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8" Padding="16">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="本程序使用以下开源组件（完整声明见仓库根 THIRD-PARTY-NOTICES.md）："
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.8" TextWrapping="Wrap" />
+                    <TextBlock Text="· repkg（MIT）—— Wallpaper Engine .pkg / .tex 解包&#x0a;· WinTips（MIT）—— 操作提示浮窗&#x0a;· ImageSharp —— 图片与 GIF 解码&#x0a;· CommunityToolkit.Mvvm —— MVVM 源生成&#x0a;· Microsoft Windows App SDK —— WinUI 3 运行时"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.75" />
+                    <HyperlinkButton NavigateUri="https://github.com/chenmoulaile/WinCanvas"
+                                     Content="项目仓库：github.com/chenmoulaile/WinCanvas" />
+                    <HyperlinkButton NavigateUri="https://github.com/chenmoulaile/WinCanvas/releases"
+                                     Content="发布页（安装包与便携版）" />
+                </StackPanel>
+            </Border>
+
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

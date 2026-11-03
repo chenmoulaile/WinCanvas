@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="WinCanvas.App.Pages.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:WinCanvas.App.ViewModels">
+
+    <!-- 设置页：所有【全局 / 软件级】开关与快捷键都收在这里。
+         v0.3.0 之前它们和窗口属性、壁纸库挤在同一页长滚动列表里，
+         结果是「想改个快捷键要滚过半屏」，而主功能区又被开关们稀释。
+
+         数据源是主窗口的同一个 MainViewModel（经 ViewModel 依赖属性注入）：
+         设置项与界面状态必须只有一份真源，页面只做呈现。 -->
+    <ScrollViewer Padding="24,8,24,24">
+        <StackPanel Spacing="12" MaxWidth="860" HorizontalAlignment="Stretch">
+
+            <TextBlock Text="设置"
+                       Style="{ThemeResource SubtitleTextBlockStyle}" />
+
+            <!-- ===== 通用 ===== -->
+            <TextBlock Text="通用"
+                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8" Padding="16">
+                <StackPanel Spacing="16">
+                    <!-- 当前权限（WP5 UIPI 预检）：进程启动时检测一次，运行期不变；
+                         用户据此判断对管理员窗口操作失败时是否需要提权重启 -->
+                    <TextBlock Text="{x:Bind ViewModel.ElevationStatusText}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.8" TextWrapping="Wrap" />
+
+                    <!-- 启动自动恢复（WP3）：关闭后启动 / 刷新均不做恢复动作，档案仍保留 -->
+                    <ToggleSwitch Header="启动时自动恢复窗口状态"
+                                  IsOn="{x:Bind ViewModel.AutoRestoreOnStartup, Mode=TwoWay}"
+                                  AutomationProperties.Name="启动时自动恢复窗口状态与背景" />
+
+                    <ToggleSwitch Header="WinTips 提示（NumLock 状态）"
+                                  IsOn="{x:Bind ViewModel.WinTipsEnabled, Mode=TwoWay}"
+                                  AutomationProperties.Name="开启 NumLock 状态提示浮窗" />
+
+                    <ToggleSwitch Header="壁纸声音（默认关闭）"
+                                  IsOn="{x:Bind ViewModel.WallpaperAudioEnabled, Mode=TwoWay}"
+                                  AutomationProperties.Name="允许带音轨的壁纸发声；默认关闭" />
+                    <TextBlock Text="{x:Bind ViewModel.AudioHintText, Mode=OneWay}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.7" TextWrapping="Wrap" />
+
+                    <ToggleSwitch Header="FPS 性能监控悬浮显示（开发阶段）"
+                                  IsOn="{x:Bind ViewModel.FpsOverlayEnabled, Mode=TwoWay}"
+                                  AutomationProperties.Name="在界面右上角显示渲染帧率" />
+                </StackPanel>
+            </Border>
+
+            <!-- ===== 全局快捷键 ===== -->
+            <TextBlock Text="全局快捷键"
+                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8" Padding="16">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="即使程序在后台或收进托盘，这些组合键也能触发对应功能。点「组合键」按钮后按下新组合即可改键。"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.8" TextWrapping="Wrap" />
+
+                    <!-- 捕获态提示条：明确告诉用户「现在按下的键会被记到哪一行」，
+                         并提示 Esc 取消 —— 没有这条提示，捕获态看起来像界面卡住 -->
+                    <InfoBar IsOpen="{x:Bind ViewModel.IsCapturingHotkey, Mode=OneWay}"
+                             Severity="Informational"
+                             IsClosable="False"
+                             Message="正在录入快捷键：按下组合键（至少含 Ctrl 或 Alt），按 Esc 取消。" />
+
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.HotkeyRows, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:HotkeyRowViewModel">
+                                <Grid Padding="0,6" ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Spacing="2" VerticalAlignment="Center">
+                                        <TextBlock Text="{x:Bind Label}"
+                                                   Style="{ThemeResource BodyTextBlockStyle}" />
+                                        <TextBlock Text="{x:Bind Description}"
+                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                   Opacity="0.7" TextWrapping="Wrap" />
+                                        <!-- 注册 / 校验失败原因：红字直说，不靠弹窗 -->
+                                        <TextBlock Text="{x:Bind Error, Mode=OneWay}"
+                                                   Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                   TextWrapping="Wrap"
+                                                   Visibility="{x:Bind ErrorVisibility, Mode=OneWay}" />
+                                    </StackPanel>
+
+                                    <Button Grid.Column="1"
+                                            MinWidth="140"
+                                            Command="{x:Bind CaptureCommand}"
+                                            AutomationProperties.Name="{x:Bind Label, Mode=OneTime}"
+                                            Content="{x:Bind ComboText, Mode=OneWay}" />
+
+                                    <ToggleSwitch Grid.Column="2"
+                                                  OnContent="" OffContent=""
+                                                  MinWidth="0"
+                                                  IsOn="{x:Bind Enabled, Mode=TwoWay}"
+                                                  AutomationProperties.Name="{x:Bind Label, Mode=OneTime}" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Text="{x:Bind ViewModel.HotkeyStatusText, Mode=OneWay}"
+                                   VerticalAlignment="Center"
+                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                   Opacity="0.8" TextWrapping="Wrap" />
+
+                        <Button Grid.Column="1"
+                                Margin="8,0,0,0"
+                                Command="{x:Bind ViewModel.ResetAllHotkeysCommand}"
+                                AutomationProperties.Name="把所有快捷键恢复为默认组合"
+                                Content="恢复默认" />
+                        <Button Grid.Column="2"
+                                Margin="8,0,0,0"
+                                Command="{x:Bind ViewModel.ApplyHotkeysCommand}"
+                                Style="{ThemeResource AccentButtonStyle}"
+                                AutomationProperties.Name="按当前设置重新注册全部全局快捷键"
+                                Content="应用" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>
