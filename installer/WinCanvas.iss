@@ -1,7 +1,16 @@
 ﻿; ===== WinCanvas 安装包脚本（Inno Setup 6） =====
 ;
 ; 用法（在仓库根目录执行）：
-;   ISCC.exe /DSourceDir="<publish 输出目录>" /DMyAppVersion="0.2.0" installer\WinCanvas.iss
+;   ISCC.exe /DSourceDir="<publish 输出目录>" /DMyAppVersion="0.3.0" installer\WinCanvas.iss
+;
+; 本脚本已在 Inno Setup 6.7 上实测编译通过（v0.3.0）。这一步不能省：
+; [Setup] 段的非法指令、[Code] 段的未定义标识符都只在编译期暴露，
+; 而 Inno 一遇错就中止 —— 只看文件内容 review 会全部漏过。
+; v0.3.0 自检时一次撞出四处：SetupAppTitle 不是 [Setup] 指令、
+; OnlyBelowVersion=0,6.4 等于「只允许装在 Windows 10 以下」（与 MinVersion 矛盾）、
+; TaskSelected 在卸载阶段根本不存在（Tasks 属于安装向导，没有读回接口）、
+; MsgBox 的按钮参数是 mb_YesNo 这样的单常量而不是 [mbYes, mbNo]。
+; CI 的「编译 Inno Setup 安装包」步骤把这件事变成每次标签推送都跑的门禁。
 ;
 ; 版本单一来源：/DMyAppVersion 的值应取自 Directory.Build.props 的 <WinCanvasVersion>。
 ; CI（.github/workflows/build-and-test.yml）已从该文件解析后再传入，不要手工另写一份数字 ——
@@ -42,8 +51,12 @@ DisableProgramGroupPage=yes
 ; 最低系统版本：圆角需 Windows 11 DWM 属性，但 1809 起其余功能可用
 ; （Mica 在 code-behind 里按 build>=22621 判定，低版本自动降级亚克力/纯色）。
 ; 与 csproj 的 TargetPlatformMinVersion=10.0.17763 保持一致口径。
+;
+; 这里刻意【不写】OnlyBelowVersion：v0.3.0 自检时发现曾写成 `0,6.4`，
+; 而 Inno 的版本号里 6.4 就是 Windows 10 的前一版 —— 那条上限等于「只允许装在
+; Windows 10 以下」，与 MinVersion=10.0.17763 直接矛盾，会让所有 Win10/11 机器
+; 在安装第一步被拒。下限有 MinVersion 一处表达就够了。
 MinVersion=10.0.17763
-OnlyBelowVersion=0,6.4
 
 ; 仅 64 位：产物固定 win-x64，装在 ARM64 上走模拟运行时 WinUI 3 宿主不可靠
 ArchitecturesAllowed=x64compatible
@@ -53,7 +66,8 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; 运行中覆盖会因文件被锁而半途失败，留下一个既不是新版也不是旧版的目录。
 CloseApplications=yes
 CloseApplicationsFilter=*.exe,*.dll
-SetupAppTitle=安装 {#MyAppName}
+; 向导体标题由 AppName 派生（Inno 没有 SetupAppTitle 这条 [Setup] 指令，
+; 写上去编译期就中止：Unrecognized [Setup] section directive）。
 
 ; 与 App.xaml.cs 里的单实例互斥体同名（Inno 会同时试 Local\ 与 Global\ 前缀）。
 ; 配合 CloseApplications，安装/卸载前提示并允许关闭正在运行的实例。
@@ -72,9 +86,10 @@ DisableWelcomePage=no
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-; 壁纸解包缓存可以长到 GB 级且迁移前【没有任何清理代码】（全仓无 Directory.Delete），
-; 所以卸载时给一个显式的、默认不勾选的清理入口，而不是替用户决定删数据。
-Name: "delcache"; Description: "同时删除壁纸解包缓存（%LOCALAPPDATA%\WinCanvas\wallpaper-cache，可能占用数 GB）"; GroupDescription: "清理选项："; Flags: unchecked
+; 壁纸解包缓存的清理【不在这里做】：Inno 的 Tasks 只在安装向导里存在，
+; 卸载阶段没有向导、也就没有任何 API 能读回用户当初勾没勾（TaskSelected 在
+; [Code] 里是未定义标识符，编译期就报 Unknown identifier）。
+; 改成卸载时直接问 —— 见下面 CurUninstallStepChanged。
 
 [Files]
 ; 发布产物整体（含 WinTips\ 子目录、WinCanvas.ico 与全部运行时依赖）
@@ -99,20 +114,29 @@ Type: filesandordirs; Name: "{app}\logs"
 Type: filesandordirs; Name: "{app}\WinTips"
 
 [code]
-// 卸载时按用户勾选清理壁纸解包缓存。
-// 配置 %APPDATA%\WinCanvas\config.json 【始终保留】：那是用户的窗口档案，
-// 误删的代价远大于磁盘空间。
+// 卸载时按用户意愿清理壁纸解包缓存。
+//
+// 为什么在这里问而不是做成安装期的 Task：Tasks 属于安装向导，卸载阶段
+// 既没有向导也没有读回接口，「卸载时按当初的勾选清理」在 Inno 里做不到。
+// 配置 %APPDATA%\WinCanvas\config.json 【始终不删】：那是用户的窗口档案，
+// 误删的代价远大于省下的磁盘空间。
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   CachePath: String;
 begin
-  if CurUninstallStep = usPostUninstall then
+  if CurUninstallStep = usUninstall then
   begin
-    if TaskSelected('delcache') then
+    CachePath := ExpandConstant('{localappdata}\WinCanvas\wallpaper-cache');
+    if DirExists(CachePath) then
     begin
-      CachePath := ExpandConstant('{localappdata}\WinCanvas\wallpaper-cache');
-      if DirExists(CachePath) then
+      if MsgBox('同时删除壁纸解包缓存？' + #13#10 +
+                CachePath + #13#10 +
+                '（这里放的是 Wallpaper Engine .pkg 解包出来的图片与视频，可能占用数 GB。' +
+                '选「否」则保留，重装后不必重新解包。）',
+                mbConfirmation, mb_YesNo) = IDYES then
+      begin
         DelTree(CachePath, True, True, True);
+      end;
     end;
   end;
 end;
