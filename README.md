@@ -149,14 +149,28 @@ Win32 宿主窗口（类名 `WinCanvasWallpaperHost`），两条挂接路径自�
   启动时恢复的也是目录 —— 修掉「目录型壁纸重启后被判成『背景文件已不存在』而不恢复」
   （`WallpaperFormats.IsAvailableBackgroundPath` = 文件存在 **或** 是可用项目目录）。
 - **壁纸库自动检索**（`WallpaperEngineLibrary`）：`DetectRoots()` 依次试
-  注册表 `Steam App 431960` 的 InstallLocation（HKLM 64/32 + HKCU）、常见 Steam 安装路径、
-  `libraryfolders.vdf` 里的全部库、`workshop/content/431960`；探测不到就在界面上手填目录
-  （`WallpaperLibraryRoots` 存进配置，用户根优先、自动探测兜底、去重）。
+  注册表 `Steam App 431960` 的 InstallLocation（HKLM 64/32 + HKCU）、
+  非 Steam 渠道的「Wallpaper Engine」卸载条目与常见安装路径（v0.4.0）、
+  `HKCU\Software\Valve\Steam` 的 SteamPath（v0.4.0——Steam 装在非标准盘时唯一能探到库位置的
+  注册表来源，实测本机 `D:\Steam`）、常见 Steam 安装路径、各 Steam 根下 `libraryfolders.vdf`
+  里的全部库、`workshop/content/431960` 与 `wallpaper_engine/projects/myprojects`。
+  v0.4.0 起候选根再叠加两类：**系统主题壁纸**（`%LOCALAPPDATA%\Microsoft\Windows\Themes`，
+  顶层壁纸文件 + 各主题包的 `DesktopBackground`）与**用户图片库**（KnownFolder Pictures）；
+  每条条目带来源标签（工坊 / 系统 / 图片库 / 自定义）。探测不到就在界面上手填目录
+  （`WallpaperLibraryRoots` 存进配置，库面板与设置区均可增删，用户根优先、自动探测兜底、去重）。
   扫描只下探一层子目录（WE 的库本身就是 `<根>/<id>/project.json`），
   实测**真实库 96 条耗时 27ms**（78 个项目目录 + 18 个散装媒体文件；
   scene 40 / video 33 / web 4 / 无法识别 1，其中 95 条可挂接）。
   「扫描判定可用」与「加载器真的能用」由 `tools/WvLibraryDiag` 逐条交叉校验，防止列表里
   出现点下去才报错的条目。
+  v0.4.0 修掉的继承缺陷：`libraryfolders.vdf` 的 `"path"` 行解析此前截取的是引号之间的
+  **制表符分隔符**而非路径，多库解析恒为空（多盘 Steam 的工坊从未被探到过）。
+- **扫描结果缓存与增量刷新**（v0.4.0）：扫描结果整包缓存进 config
+  （`AppConfig.WallpaperLibraryCache`，按根记账）；启动先回填缓存（秒开），后台再增量刷新——
+  每个根按「顶层子项名 + 修改时间」算内容签名，签名没变的根**整根复用缓存条目**，
+  不再读任何 `project.json`；「检索壁纸库」按钮走强制全量。扫描在 `Task.Run` 后台执行、
+  可取消（新扫描自动接替旧扫描）、进度按根可见（「第 N / M 个目录」）；
+  未装 WE / 目录为空 / 过滤无命中三种空态各有引导文案，不报错。
 - **缩略图**：库里条目上百个，构造时全解码会在打开面板的一瞬间把几十张 GIF 推进内存
   （实测私有内存 48MB → **247MB**）。改由 View 的 `Loaded` 事件按需解码，
   并用 `SemaphoreSlim(1,1)` 串行化 + 解码后立即缩到 120px 存 PNG 再回 UI 线程，

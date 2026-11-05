@@ -38,16 +38,16 @@ internal static class Program
 
         var detected = WallpaperEngineLibrary.DetectRoots();
         Console.WriteLine($"\n-- 自动探测到 {detected.Count} 个候选根 --");
-        foreach (string d in detected)
+        foreach (var d in detected)
         {
-            Console.WriteLine($"   {d}");
+            Console.WriteLine($"   [{d.Source}] {d.Path}");
         }
 
-        foreach (string d in detected)
+        foreach (var d in detected)
         {
-            if (!roots.Contains(d, StringComparer.OrdinalIgnoreCase))
+            if (!roots.Contains(d.Path, StringComparer.OrdinalIgnoreCase))
             {
-                roots.Add(d);
+                roots.Add(d.Path);
             }
         }
 

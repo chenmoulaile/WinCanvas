@@ -684,9 +684,9 @@ public bool HasVideoPlayer => Player is not null;
 | --- | --- |
 | `Loaders.WallpaperProjectLoader.IsProjectDirectory(string?)` | 判定「这是一个 WE 项目目录」（目录 + 有 `project.json`） |
 | `Loaders.WallpaperProjectLoader.Load(projectDirectory, audioEnabled = false)` | 按 `fileType` 分派：scene → 同目录 `scene.pkg` 交给 `PkgWallpaperLoader`（解不开则退化到封面）；video → `VideoWallpaperLoader`；web → 预览图并附「不渲染网页」说明；audiofilter / unknown → `NotSupportedException` 带人话理由。返回的 `WallpaperSource.OriginalPath` **恒为项目目录** |
-| `WallpaperEngineLibrary.DetectRoots()` | 注册表 `Steam App 431960` InstallLocation（HKLM 64 位 / 32 位视图 + HKCU）→ 标准 Steam 路径 → `libraryfolders.vdf` 全部库 → `workshop/content/431960`；返回去重后的候选根（可能为空，非 Steam 部署就是这样） |
-| `WallpaperEngineLibrary.Scan(roots, includeLooseMedia = true, ct)` | 只下探一层子目录（递归会撞上 shaders / materials / sound 这些素材文件夹并产生大量无意义条目）；`Classify` 与加载器的分派口径**刻意一致**（「列表里说可用」=「点下去真的能挂上」）；`includeLooseMedia` 时把根目录里的散装图片/视频/.pkg 也收进来；按路径（忽略大小写）去重 |
-| `WallpaperEngineLibrary.WallpaperLibraryEntry` | `sealed record (Path, Title, WallpaperLibraryEntryKind EntryKind, PreviewPath, MightHaveAudio, IsUsable, UnusableReason)`；`EntryKind` ∈ `{ Project, MediaFile }`；不可用条目的 `UnusableReason` 是直接能显示给用户的话 |
+| `WallpaperEngineLibrary.DetectRoots()` | 注册表 `Steam App 431960` InstallLocation（HKLM 64 位 / 32 位视图 + HKCU）→ 非 Steam「Wallpaper Engine」卸载条目与常见安装路径（v0.4.0）→ `HKCU\Software\Valve\Steam` 的 SteamPath（v0.4.0）→ 标准 Steam 路径 → 各 Steam 根 `libraryfolders.vdf` 全部库 → `workshop/content/431960` 与 `wallpaper_engine/projects/myprojects`；返回带来源的 `WallpaperLibraryRoot` 列表（已确认存在、按路径去重，可能为空） |
+| `WallpaperEngineLibrary.Scan(roots, includeLooseMedia = true, ct)` | 旧入口（来源按 Custom）；只下探一层子目录（递归会撞上 shaders / materials / sound 这些素材文件夹并产生大量无意义条目）；`Classify` 与加载器的分派口径**刻意一致**（「列表里说可用」=「点下去真的能挂上」）；`includeLooseMedia` 时把根目录里的散装图片/视频/.pkg 也收进来；按路径（忽略大小写）去重 |
+| `WallpaperEngineLibrary.WallpaperLibraryEntry` | `sealed record (Path, Title, WallpaperLibraryEntryKind EntryKind, PreviewPath, MightHaveAudio, IsUsable, UnusableReason, WallpaperLibrarySource Source = Custom)`；`EntryKind` ∈ `{ Project, MediaFile }`；不可用条目的 `UnusableReason` 是直接能显示给用户的话 |
 
 ### 8.3 Wallpaper：格式与音频
 
@@ -705,12 +705,17 @@ public bool HasVideoPlayer => Player is not null;
 `LibraryStatusText` / `LibraryRootsText` / `WallpaperAudioEnabled` / `AudioHintText`，
 命令 `ScanLibrary` / `AddLibraryRoot` / `RemoveLibraryRoot` / `ApplyLibraryItem`，
 以及 `InitializeWallpaperLibrary()`（由 `InitializeAsync` 在配置加载后调用）。
+v0.4.0 增补：`LibraryProgressText`（按根的扫描进度文本）、`LibraryRootRows`（设置区
+自定义目录行）、`LibraryEmptyVisibility` / `LibraryEmptyText`（空态引导）；
+`ScanLibrary` 改走 `RunLibraryScanAsync(forceFullScan)`——手动按钮强制全量，
+启动增量刷新（缓存秒开 → 后台按根签名刷新），新扫描自动取消并接替旧扫描（世代号判界）。
 
 `ViewModels/WallpaperLibraryItemViewModel.cs`：缩略图**按需 + 串行**解码
 （`EnsurePreview()` 由 View 的 `Loaded` 触发，`SemaphoreSlim(1,1)` 串行，
 解码后立刻缩到 120px 存 PNG 再封回 UI 线程）。
 理由与实测数据：WinUI 的 `BitmapImage` 会解码并**保留 GIF 的每一帧**，
 构造时全量解码让私有内存 48MB → 247MB；改后 102MB。
+v0.4.0 增补 `Source` / `SourceLabel`（工坊 / 系统 / 图片库 / 自定义来源标签）。
 
 ### 8.5 Wallpaper：WinTips 外挂可启动性探测
 
@@ -726,3 +731,38 @@ public bool HasVideoPlayer => Player is not null;
 `IsWinTipsAvailable` 现在要求**真的能启动**。不可用时 NumLock 提示回退为
 **托盘气泡**（`TrayIconService.ShowBalloon`），没有托盘才退回主界面 InfoBar ——
 本工具的典型用法是主窗口收在托盘里，只写 InfoBar 等于把提示写在一个看不见的窗口上。
+
+## 9. v0.4.0 新增公开 API：壁纸库多来源 + 缓存秒开
+
+### 9.1 Core：来源与缓存模型
+
+`src/WinCanvas.Core/Models/`
+
+| 符号 | 签名 | 语义 |
+| --- | --- | --- |
+| `WallpaperLibrarySource` | `enum { Workshop = 0, SystemTheme = 1, Pictures = 2, Custom = 3 }` | 条目 / 扫描根的来源分类；以 int 持久化，数值只增不改 |
+| `WallpaperLibraryCacheEntry` | POCO：`Path` / `Title` / `Kind` / `Source` / `PreviewPath` / `MightHaveAudio` / `IsUsable` / `UnusableReason` | 缓存的单条条目（枚举按 int 存） |
+| `WallpaperLibraryRootCache` | POCO：`Root` / `Source` / `Signature` / `Entries` / `ScannedAtUtc` | 按根的增量记账单元：内容签名 + 上次条目 |
+| `AppConfig.WallpaperLibraryCache` | `List<WallpaperLibraryRootCache>` | 启动先回填（秒开）再后台增量刷新；不影响最终正确性 |
+
+### 9.2 Wallpaper：多来源探测与增量扫描
+
+`WallpaperEngineLibrary`（v0.4.0 扩展）：
+
+| 符号 | 签名 | 语义 |
+| --- | --- | --- |
+| `WallpaperLibraryRoot` | `sealed record (string Path, WallpaperLibrarySource Source)` | 候选扫描根；来源决定扫描细则（如系统主题多探一层 `DesktopBackground`） |
+| `DetectRoots()` | `→ IReadOnlyList<WallpaperLibraryRoot>` | 工坊根：卸载注册表（Steam App 431960 + DisplayName「Wallpaper Engine」条目）→ SteamPath（`HKCU\Software\Valve\Steam`）→ 常见路径 → 各 Steam 根 `libraryfolders.vdf` 多库 → `workshop/content/431960` 与 `myprojects` |
+| `DetectSystemThemeRoots()` | 同上 | `%LOCALAPPDATA%\Microsoft\Windows\Themes`（缺席返回空，不报错） |
+| `DetectPicturesRoots()` | 同上 | KnownFolder Pictures（`Environment.SpecialFolder.MyPictures`） |
+| `DetectCandidateRoots()` | 同上 | 三类合并、按路径去重（先到先得） |
+| `ReadSteamPathFromRegistry()` | `internal static string?` | 读 SteamPath；键不存在 / 异常返回 null（契约单测：返回即存在的目录） |
+| `ParseLibraryFolders(vdfPath)` | `internal static IEnumerable<string>` | VDF `"path"` 行解析（v0.4.0 修复继承缺陷：旧实现截的是引号间制表符，多库解析恒为空） |
+| `ScanWithCache(roots, previousCache, forceFullScan, progress, ct)` | `→ WallpaperLibraryScanResult` | 增量入口：签名未变的根整根复用缓存（不读 project.json）；`forceFullScan` 强制全量；`progress` 每根一报；取消抛 `OperationCanceledException` |
+| `WallpaperLibraryScanResult` | `record (Entries, RootCaches)` | 合并排序后的条目 + 供落盘的按根缓存 |
+| `WallpaperLibraryScanProgress` | `record (ScannedRoots, TotalRoots, EntryCount)` | 进度快照（「第 N / M 个目录」） |
+| `ComputeRootSignature(root)` | `internal static string` | 顶层子项名 + mtime（UTC Tick）排序后 SHA-256；根缺失返回哨兵 `MissingRootSignature` |
+| `ToCacheEntry` / `FromCacheEntry` | `internal static` | 条目 ↔ 缓存条目映射；脏数据（空 Path / null）安全降级 |
+
+已知边界（有意接受）：自定义根下「项目目录内部文件的原地修改」不改变根的签名
+（其父目录 mtime 不变），该根被增量复用——需要立即看到时点「检索壁纸库」强制全量。

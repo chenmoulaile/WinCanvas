@@ -277,20 +277,27 @@
                                         BorderThickness="1"
                                         CornerRadius="8" Padding="16">
                                     <StackPanel Spacing="12">
-                                        <TextBlock Text="自动检索 Wallpaper Engine 的项目目录（project.json）、创意工坊已订阅壁纸，以及目录里散落的图片 / 视频 / .pkg。选中一个窗口后点条目即可挂接。"
+                                        <TextBlock Text="自动检索 Wallpaper Engine（创意工坊与本地项目）、系统主题壁纸、「图片」库，以及自定义目录里散落的图片 / 视频 / .pkg。每条带来源标签；选中一个窗口后点条目即可挂接。"
                                                    Style="{ThemeResource CaptionTextBlockStyle}"
                                                    Opacity="0.8" TextWrapping="Wrap" />
 
-                                        <!-- 扫描根列表：让用户看清「在哪些目录里找」，也便于移除 -->
+                                        <!-- 扫描根列表：让用户看清「在哪些目录里找」，带来源前缀 -->
                                         <TextBlock Text="{x:Bind ViewModel.LibraryRootsText, Mode=OneWay}"
                                                    Style="{ThemeResource CaptionTextBlockStyle}"
                                                    Opacity="0.7" TextWrapping="Wrap" />
 
-                                        <TextBox PlaceholderText="按标题过滤壁纸…"
+                                        <TextBox PlaceholderText="按标题 / 类型 / 来源过滤壁纸…"
                                                  Text="{x:Bind ViewModel.LibraryFilter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                  AutomationProperties.Name="过滤壁纸库条目" />
 
-                                        <!-- 库条目：虚拟化 ListView，缩略图按视口延迟解码 -->
+                                        <!-- 扫描进度（v0.4.0）：ProgressRing 之外补一条文字进度，
+                                             让「扫到第几个目录、发现了多少」可见 -->
+                                        <TextBlock Text="{x:Bind ViewModel.LibraryProgressText, Mode=OneWay}"
+                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                   Opacity="0.8" TextWrapping="Wrap"
+                                                   AutomationProperties.Name="壁纸库扫描进度" />
+
+                                        <!-- 库条目：虚拟化 GridView，缩略图按视口延迟解码 -->
                                         <GridView MaxHeight="360"
                                                   IsItemClickEnabled="True"
                                                   SelectionMode="None"
@@ -326,6 +333,10 @@
                                                                    Style="{ThemeResource CaptionTextBlockStyle}" />
 
                                                         <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="6">
+                                                            <!-- 来源标签（v0.4.0）：工坊 / 系统 / 图片库 / 自定义 -->
+                                                            <TextBlock Text="{x:Bind SourceLabel}"
+                                                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                                                       Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                                                             <TextBlock Text="{x:Bind KindLabel}"
                                                                        Style="{ThemeResource CaptionTextBlockStyle}" Opacity="0.6" />
                                                             <!-- 含音轨标记：提醒「这张有声音，但默认是静音的」 -->
@@ -345,6 +356,22 @@
                                                 </DataTemplate>
                                             </GridView.ItemTemplate>
                                         </GridView>
+
+                                        <!-- 空态引导（v0.4.0）：未装 WE / 目录为空 / 过滤无命中三种「没有条目」
+                                             必须说清差别并给出怎么办，不能只留一片空白 -->
+                                        <Border Visibility="{x:Bind ViewModel.LibraryEmptyVisibility, Mode=OneWay}"
+                                                Background="{ThemeResource LayerFillColorDefaultBrush}"
+                                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="4" Padding="16">
+                                            <StackPanel Spacing="6">
+                                                <TextBlock Text="库里还没有壁纸"
+                                                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                                                <TextBlock Text="{x:Bind ViewModel.LibraryEmptyText, Mode=OneWay}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Opacity="0.8" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Border>
 
                                         <TextBlock Text="{x:Bind ViewModel.LibraryStatusText, Mode=OneWay}"
                                                    Style="{ThemeResource CaptionTextBlockStyle}"

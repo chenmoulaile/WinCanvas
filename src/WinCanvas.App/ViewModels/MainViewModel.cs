@@ -985,6 +985,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public void Dispose()
     {
+        // 壁纸库扫描若还在跑：作废它（扫描体只读快照，取消即安全丢弃；
+        // CTS 的生命周期说明见 WallpaperLibrary partial——刻意不 Dispose，只 Cancel）。
+        _libraryScanCts?.Cancel();
         DisposeShell();
         _fpsMonitor.Dispose();
     }

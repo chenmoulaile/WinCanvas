@@ -5,6 +5,7 @@ using SixLabors.ImageSharp.Processing;
 using System.Runtime.InteropServices.WindowsRuntime;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.UI.Xaml.Media.Imaging;
+using WinCanvas.Core.Models;
 using WinCanvas.Wallpaper;
 using WinCanvas.Wallpaper.Models;
 
@@ -38,6 +39,19 @@ public sealed partial class WallpaperLibraryItemViewModel : ObservableObject
 
     /// <summary>显示标题。</summary>
     public string Title => _entry.Title;
+
+    /// <summary>条目来源（工坊 / 系统主题 / 图片库 / 自定义，v0.4.0 新增）。</summary>
+    public WallpaperLibrarySource Source => _entry.Source;
+
+    /// <summary>来源的中文短标签（来源标签格子用）。</summary>
+    public string SourceLabel => Source switch
+    {
+        WallpaperLibrarySource.Workshop => "工坊",
+        WallpaperLibrarySource.SystemTheme => "系统",
+        WallpaperLibrarySource.Pictures => "图片库",
+        WallpaperLibrarySource.Custom => "自定义",
+        _ => "未知", // config 缓存里出现未知数值（旧版本新枚举）：降级显示而不是崩溃
+    };
 
     /// <summary>类型短标签（场景 / 视频 / 网页 / 图片 / pkg）。</summary>
     public string KindLabel => _entry.EntryKind switch

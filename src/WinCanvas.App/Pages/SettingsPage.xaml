@@ -139,6 +139,62 @@
                 </StackPanel>
             </Border>
 
+            <!-- ===== 壁纸库目录（v0.4.0 新增）=====
+                 自定义扫描根在这里增删（config 持久化）。自动探测的候选
+                 （创意工坊 / 系统主题 / 图片库）不受本列表控制，只读展示在末行。 -->
+            <TextBlock Text="壁纸库目录"
+                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8" Padding="16">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="自定义目录会与自动探测的候选（Wallpaper Engine 工坊 / 系统主题壁纸 / 图片库）一起进入「壁纸库」扫描。添加后立即重新检索并持久化，重启后仍生效。"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.8" TextWrapping="Wrap" />
+
+                    <!-- 自定义目录行：路径 + 移除（与快捷键行同一套「行对象持有命令」模式） -->
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.LibraryRootRows, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:WallpaperLibraryRootRow">
+                                <Grid Padding="0,4" ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{x:Bind Path}"
+                                               VerticalAlignment="Center"
+                                               Style="{ThemeResource CaptionTextBlockStyle}"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <Button Grid.Column="1"
+                                            Content="移除"
+                                            Command="{x:Bind RemoveCommand}"
+                                            AutomationProperties.Name="移除该自定义壁纸库目录" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Click="OnAddLibraryRootClick"
+                                AutomationProperties.Name="添加一个自定义目录参与壁纸库扫描"
+                                Content="添加目录" />
+                        <Button Command="{x:Bind ViewModel.ScanLibraryCommand}"
+                                IsEnabled="{x:Bind ViewModel.CanScanLibrary, Mode=OneWay}"
+                                AutomationProperties.Name="强制重新扫描全部壁纸库目录"
+                                Content="检索壁纸库" />
+                    </StackPanel>
+
+                    <!-- 自动探测候选（只读）：让用户看清全貌，避免「为什么库里有我没加过的目录」的疑问 -->
+                    <TextBlock Text="当前全部扫描根（含自动探测，自动项不可在此移除）："
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.7" TextWrapping="Wrap" />
+                    <TextBlock Text="{x:Bind ViewModel.LibraryRootsText, Mode=OneWay}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.7" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
         </StackPanel>
     </ScrollViewer>
 </UserControl>

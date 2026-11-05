@@ -44,12 +44,22 @@ public sealed class AppConfig
 
     /// <summary>
     /// 壁纸库扫描根（绝对路径列表）。
-    /// 为空时运行期使用 <c>WallpaperEngineLibrary.DetectRoots()</c> 的自动探测结果；
+    /// 为空时运行期使用自动探测结果（创意工坊 / 系统主题 / 图片库）；
     /// 非空则以用户配置的为准（自动探测的结果仍会并入，去重）。
     /// 之所以必须允许手工配置：实测存在「Wallpaper Engine 不是通过 Steam 安装、
     /// 放在自己盘上的某个目录」的情形，注册表与标准路径都探不到。
     /// </summary>
     public List<string> WallpaperLibraryRoots { get; set; } = new();
+
+    /// <summary>
+    /// 壁纸库扫描结果的持久化缓存（v0.4.0 新增，按扫描根记账，见
+    /// <see cref="WallpaperLibraryRootCache"/>）。
+    ///
+    /// 语义：启动时【先】用它回填库面板（重启秒开），【再】在后台做增量刷新——
+    /// 根目录签名没变的整根复用，变过的才重扫。缓存只影响「第一次显示多快」，
+    /// 不影响最终正确性：后台刷新完成后会整体替换界面数据并把本字段写回。
+    /// </summary>
+    public List<WallpaperLibraryRootCache> WallpaperLibraryCache { get; set; } = new();
 
     /// <summary>
     /// 全局热键绑定表（版本 2 新增）。
