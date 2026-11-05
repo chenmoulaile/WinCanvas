@@ -31,6 +31,19 @@ public sealed class AppConfig
     /// </summary>
     public bool RestoreWindowBoundsOnStartup { get; set; } = true;
 
+    /// <summary>
+    /// 壁纸库定时轮换开关（壁纸库轮换工作包新增）。
+    /// 默认 false：轮换会按间隔主动更换所有已挂背景窗口的壁纸，属于
+    /// 「主动改变用户桌面」的行为，必须用户显式开启，不默认替用户做。
+    /// </summary>
+    public bool WallpaperRotationEnabled { get; set; }
+
+    /// <summary>
+    /// 壁纸轮换的间隔（分钟）。界面候选 5 / 15 / 30 / 60，默认 15；
+    /// 手改 config 出现非正值时运行期按默认处理（轮换执行处防御）。
+    /// </summary>
+    public int WallpaperRotationIntervalMinutes { get; set; } = 15;
+
     /// <summary>各窗口的持久化状态（按 <see cref="WindowState.Key"/> 唯一）。</summary>
     public List<WindowState> Windows { get; set; } = new();
 

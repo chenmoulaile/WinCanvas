@@ -76,6 +76,13 @@ public enum HotkeyAction
     /// （枚举值是 config.json 里的持久化标识，插入或重排会让旧配置错位）。
     /// </summary>
     FocusTogglePrivacy = 17,
+
+    /// <summary>
+    /// 「下一张壁纸」（壁纸库轮换工作包新增）：立即把下一条可用库条目挂到
+    /// 当前所有已挂背景的窗口。只能追加在枚举末尾
+    /// （枚举值是 config.json 里的持久化标识，插入或重排会让旧配置错位）。
+    /// </summary>
+    NextWallpaper = 18,
 }
 
 /// <summary>

@@ -336,6 +336,13 @@ public partial class MainViewModel
                 ToggleWallpaperAudio();
                 return;
 
+            case HotkeyAction.NextWallpaper:
+                // 壁纸轮换（壁纸库轮换工作包）：热键立即切换下一张；announceEmptyTargets=true
+                // 让「没有任何已挂背景窗口」时得到明确提示（验收点：提示而不做事）。
+                // RotateWallpaperTickAsync 自兜全部异常，不会反噬热键派发链。
+                await RotateWallpaperTickAsync(announceEmptyTargets: true);
+                return;
+
             case HotkeyAction.ToggleTopmost:
                 if (selected == null)
                 {

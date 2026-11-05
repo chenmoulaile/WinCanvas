@@ -1243,6 +1243,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // 壁纸库扫描若还在跑：作废它（扫描体只读快照，取消即安全丢弃；
         // CTS 的生命周期说明见 WallpaperLibrary partial——刻意不 Dispose，只 Cancel）。
         _libraryScanCts?.Cancel();
+        StopWallpaperRotationTimer(); // 停壁纸轮换定时器（壁纸库轮换工作包）：退出后不再触发轮换
         DisposePrivacy(); // 停前台监听（隐私窗口工作包）：进程退出前显式卸全局 WinEvent 钩子
         DisposeShell();
         _fpsMonitor.Dispose();

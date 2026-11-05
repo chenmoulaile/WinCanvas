@@ -167,6 +167,31 @@
                 </StackPanel>
             </Border>
 
+            <!-- ===== 壁纸轮换（壁纸库轮换工作包）===== -->
+            <TextBlock Text="壁纸轮换"
+                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8" Padding="16">
+                <StackPanel Spacing="12">
+                    <ToggleSwitch Header="定时自动轮换壁纸"
+                                  IsOn="{x:Bind ViewModel.WallpaperRotationEnabled, Mode=TwoWay}"
+                                  AutomationProperties.Name="按设定的间隔自动把壁纸库下一条可用条目挂到所有已挂背景的窗口" />
+                    <TextBlock Text="开启后到期自动把下一条可用条目挂到【当前所有已挂背景的窗口】（只动已挂背景的窗口）；一轮内不重复、轮完从头再来；单条挂接失败自动顺延下一条并提示。重启后各窗口恢复到轮换后的最后一张。"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.7" TextWrapping="Wrap" />
+
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <TextBlock Text="轮换间隔" VerticalAlignment="Center" />
+                        <ComboBox MinWidth="160"
+                                  ItemsSource="{x:Bind ViewModel.WallpaperRotationIntervalOptions, Mode=OneTime}"
+                                  SelectedItem="{x:Bind ViewModel.WallpaperRotationIntervalMinutes, Mode=TwoWay}"
+                                  AutomationProperties.Name="壁纸轮换的间隔（分钟）" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
             <!-- ===== 壁纸库目录（v0.4.0 新增）=====
                  自定义扫描根在这里增删（config 持久化）。自动探测的候选
                  （创意工坊 / 系统主题 / 图片库）不受本列表控制，只读展示在末行。 -->

@@ -261,11 +261,18 @@ public sealed class HotkeyTableTests
         var result = HotkeyTable.Normalize(oldConfig);
 
         Assert.Equal(HotkeyTable.Catalog.Length, result.Count);
-        Assert.All(result.Where(b => (int)b.Action >= 11), b =>
+        Assert.All(result.Where(b => (int)b.Action >= 11 && b.Action != HotkeyAction.NextWallpaper), b =>
         {
             Assert.Equal(HotkeyModifiers.Win | HotkeyModifiers.Alt, b.Modifiers);
             Assert.True(b.Enabled);
         });
+
+        // NextWallpaper（壁纸库轮换工作包，值 18）属于「选中/全局」系列的 Ctrl+Alt 前缀，
+        // 不在焦点系列的 Win+Alt 组里——单独钉住它的默认组合
+        var next = Assert.Single(result, b => b.Action == HotkeyAction.NextWallpaper);
+        Assert.Equal(HotkeyModifiers.Control | HotkeyModifiers.Alt, next.Modifiers);
+        Assert.True(next.Enabled);
+
         Assert.All(result.Where(b => (int)b.Action <= 10), b => Assert.Contains(b, oldConfig));
     }
 
@@ -328,8 +335,40 @@ public sealed class HotkeyTableTests
         // 重叠的那条必有一个注册失败（同一组合只能被注册一次）
         var defaults = HotkeyTable.Normalize(null);
 
-        // 目录条目数 = 动作枚举数；隐私窗口工作包追加了 FocusTogglePrivacy → 18 条
-        Assert.Equal(18, defaults.Count);
+        // 目录条目数 = 动作枚举数；隐私窗口工作包追加 FocusTogglePrivacy(17)、
+        // 壁纸轮换工作包追加 NextWallpaper(18) → 19 条
+        Assert.Equal(19, defaults.Count);
         Assert.Equal(defaults.Count, defaults.Select(b => (b.Modifiers, b.VirtualKey)).Distinct().Count());
+    }
+
+    // ---------- 下一张壁纸（壁纸库轮换工作包）：默认绑定 / 旧配置补齐 ----------
+
+    [Fact]
+    public void GetDefault_下一张壁纸_默认CtrlAltB且默认开启()
+    {
+        var binding = HotkeyTable.GetDefault(HotkeyAction.NextWallpaper);
+
+        Assert.Equal(HotkeyModifiers.Control | HotkeyModifiers.Alt, binding.Modifiers);
+        Assert.Equal(0x42, binding.VirtualKey); // B
+        Assert.True(binding.Enabled);
+        Assert.Equal("Ctrl+Alt+B", HotkeyTable.Format(binding));
+    }
+
+    [Fact]
+    public void Normalize_旧版本配置没有下一张壁纸_补默认组合且保留旧条目()
+    {
+        // 升级场景：config.json 里只有上一版（无 NextWallpaper 动作）的绑定表。
+        // 新动作按默认值补齐；旧条目（用户改过的键与开关）必须原样保留。
+        var oldConfig = HotkeyTable.Normalize(null)
+            .Where(b => b.Action != HotkeyAction.NextWallpaper)
+            .ToList();
+
+        var result = HotkeyTable.Normalize(oldConfig);
+
+        Assert.Equal(HotkeyTable.Catalog.Length, result.Count);
+        var next = Assert.Single(result, b => b.Action == HotkeyAction.NextWallpaper);
+        Assert.Equal(HotkeyModifiers.Control | HotkeyModifiers.Alt, next.Modifiers);
+        Assert.Equal(0x42, next.VirtualKey);
+        Assert.All(oldConfig, b => Assert.Contains(b, result));
     }
 }

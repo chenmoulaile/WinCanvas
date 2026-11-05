@@ -46,6 +46,9 @@ public static class HotkeyTable
         // 隐私模式（隐私窗口工作包）：开启后该窗口失焦自动遮蔽内容、聚焦自动恢复。
         // 作用于焦点窗口——用户正看着的窗口就是想保护的窗口，语义与其它焦点热键一致。
         (HotkeyAction.FocusTogglePrivacy, "隐私模式切换（焦点窗口）", "焦点窗口失焦自动遮蔽内容、聚焦自动恢复"),
+        // 壁纸轮换（壁纸库轮换工作包）：与「选中窗口」系列不同，作用于【所有已挂背景的窗口】——
+        // 轮换是全局语义（把壁纸库想象成播放列表），没有「选中的窗口」概念。
+        (HotkeyAction.NextWallpaper, "下一张壁纸", "立即把壁纸库下一条可用条目挂到所有已挂背景的窗口"),
     };
 
     /// <summary>
@@ -78,6 +81,9 @@ public static class HotkeyTable
         [HotkeyAction.FocusRestoreOpaque] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x4F),           // O（Opaque）
         [HotkeyAction.FocusCycleCorner] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x55),             // U（Corner 循环）
         [HotkeyAction.FocusTogglePrivacy] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x48),           // H（Hide/隐私）
+        // 壁纸轮换：Ctrl+Alt+B（B = Background/下一张 Background）。「选中窗口」系列沿用
+        // Ctrl+Alt+ 前缀；B 未被本表其它动作占用。
+        [HotkeyAction.NextWallpaper] = (HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x42),            // B
     };
 
     /// <summary>

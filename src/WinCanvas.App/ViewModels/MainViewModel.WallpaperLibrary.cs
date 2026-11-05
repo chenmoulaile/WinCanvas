@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using WinCanvas.Core.Models;
+using WinCanvas.Core.Services;
 using WinCanvas.Wallpaper;
 
 namespace WinCanvas.App.ViewModels;
@@ -193,6 +194,9 @@ public partial class MainViewModel
         // 无论有无缓存都做一次后台增量刷新：目录可能被外部改动过。
         // 不等待（fire-and-forget）：扫描失败 / 取消都由 RunLibraryScanAsync 自己收口。
         _ = RunLibraryScanAsync(forceFullScan: false);
+
+        // 壁纸轮换：按配置回填开关与间隔，并按配置启停定时器（壁纸库轮换工作包）
+        InitializeWallpaperRotation();
     }
 
     /// <summary>把「当前生效的扫描根」刷到界面文本（带来源标签）。</summary>
@@ -502,5 +506,277 @@ public partial class MainViewModel
         ShowInfo(InfoBarSeverity.Informational, WallpaperAudioEnabled
             ? "壁纸声音已开启。"
             : "壁纸声音已关闭（静音）。");
+    }
+
+    // ============ 壁纸库轮换（壁纸库轮换工作包）============
+    //
+    // 语义：定时（或热键 / 立即）把壁纸库的下一条可用条目挂到【当前所有已挂背景的窗口】。
+    // 只动已挂背景的窗口——没挂背景的窗口用户没授权壁纸行为，绝不越权去动它。
+    // 选条目走 <see cref="WallpaperRotationRules.PickNextRotationPath"/> 纯函数（round-robin：
+    // 一轮内不重复、轮完从头再来），并发纪律见 _rotationPlayedThisRound 注释。
+
+    /// <summary>
+    /// 轮换定时器（UI 线程 DispatcherQueueTimer）：Tick 在 UI 线程触发，
+    /// 本文件的全部轮换状态因此只在 UI 线程读写，不需要锁。
+    /// 生命周期：轮换开关开启时创建并启动，关闭 / Dispose 时停止并置空。
+    /// </summary>
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _rotationTimer;
+
+    /// <summary>
+    /// 本轮已播过的路径集合（round-robin 记账）。
+    /// 线程安全约定：轮换的触发方只有轮换定时器与热键，两者都经
+    /// DispatcherQueue 封送回 UI 线程（见 AttachShell 的热键订阅），本集合只在
+    /// UI 线程读写，故不加锁；不要从后台线程触碰。
+    /// </summary>
+    private readonly HashSet<string> _rotationPlayedThisRound = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>上一张挂接的路径（round-robin 游标；null = 尚未轮换过）。</summary>
+    private string? _lastRotatedPath;
+
+    /// <summary>轮换开关的初始化回填抑制标志（回填时不启动定时器 / 不落盘——启动动作统一在初始化尾部做）。</summary>
+    private bool _suppressRotationSync;
+
+    /// <summary>轮换间隔候选（分钟）。与「设置」页 ComboBox 绑定，验收要求的 5 / 15 / 30 / 60。</summary>
+    public IReadOnlyList<int> WallpaperRotationIntervalOptions { get; } = new[] { 5, 15, 30, 60 };
+
+    /// <summary>壁纸轮换开关（持久化 <see cref="AppConfig.WallpaperRotationEnabled"/>，默认关）。</summary>
+    [ObservableProperty]
+    public partial bool WallpaperRotationEnabled { get; set; }
+
+    /// <summary>壁纸轮换间隔（分钟，持久化 <see cref="AppConfig.WallpaperRotationIntervalMinutes"/>，默认 15）。</summary>
+    [ObservableProperty]
+    public partial int WallpaperRotationIntervalMinutes { get; set; } = 15;
+
+    partial void OnWallpaperRotationEnabledChanged(bool value)
+    {
+        if (_suppressRotationSync)
+        {
+            return; // 初始化回填：定时器的启停由 InitializeWallpaperLibrary 统一按配置执行一次
+        }
+
+        _appConfig.WallpaperRotationEnabled = value;
+        PersistConfig();
+
+        if (value)
+        {
+            StartWallpaperRotationTimer();
+            ShowInfo(InfoBarSeverity.Informational,
+                $"壁纸轮换已开启：每 {WallpaperRotationIntervalMinutes} 分钟把下一条可用条目挂到所有已挂背景的窗口" +
+                "（一轮内不重复，轮完从头再来）。可用全局热键「下一张壁纸」（Ctrl+Alt+B，可改键）立即切换。");
+        }
+        else
+        {
+            StopWallpaperRotationTimer();
+            ShowInfo(InfoBarSeverity.Informational,
+                "壁纸轮换已关闭：定时切换停止，各窗口当前壁纸保持不变。");
+        }
+    }
+
+    partial void OnWallpaperRotationIntervalMinutesChanged(int value)
+    {
+        if (_suppressRotationSync)
+        {
+            return;
+        }
+
+        if (value <= 0)
+        {
+            // 手改 config 可能出现非法值：拒绝生效并回退默认（轮换间隔必须是正分钟数）
+            _suppressRotationSync = true;
+            WallpaperRotationIntervalMinutes = 15;
+            _suppressRotationSync = false;
+            return;
+        }
+
+        _appConfig.WallpaperRotationIntervalMinutes = value;
+        PersistConfig();
+
+        // 运行中的定时器直接改 Interval（下个周期生效），不必重建
+        Microsoft.UI.Dispatching.DispatcherQueueTimer? timer = _rotationTimer;
+        if (timer is not null)
+        {
+            timer.Interval = TimeSpan.FromMinutes(value);
+        }
+    }
+
+    /// <summary>从配置回填轮换开关与间隔，并按配置启停定时器。由 InitializeWallpaperLibrary 调用。</summary>
+    private void InitializeWallpaperRotation()
+    {
+        _suppressRotationSync = true;
+        WallpaperRotationEnabled = _appConfig.WallpaperRotationEnabled;
+        WallpaperRotationIntervalMinutes =
+            _appConfig.WallpaperRotationIntervalMinutes > 0 ? _appConfig.WallpaperRotationIntervalMinutes : 15;
+        _suppressRotationSync = false;
+
+        if (WallpaperRotationEnabled)
+        {
+            StartWallpaperRotationTimer();
+        }
+    }
+
+    /// <summary>创建并启动轮换定时器（重复触发；已在跑时先重建，保证间隔语义一致）。</summary>
+    private void StartWallpaperRotationTimer()
+    {
+        StopWallpaperRotationTimer();
+
+        var timer = _dispatcherQueue.CreateTimer();
+        timer.Interval = TimeSpan.FromMinutes(Math.Max(1, WallpaperRotationIntervalMinutes));
+        timer.IsRepeating = true;
+        timer.Tick += async (_, _) => await RotateWallpaperTickAsync(announceEmptyTargets: false);
+        timer.Start();
+        _rotationTimer = timer;
+    }
+
+    /// <summary>停止并释放轮换定时器（开关关闭 / Dispose 收口）。幂等。</summary>
+    private void StopWallpaperRotationTimer()
+    {
+        Microsoft.UI.Dispatching.DispatcherQueueTimer? timer = _rotationTimer;
+        _rotationTimer = null;
+        timer?.Stop();
+    }
+
+    /// <summary>
+    /// 轮换一次：把下一条可用条目挂到当前所有已挂背景的窗口。
+    /// 触发方：轮换定时器（Tick，UI 线程）与全局热键「下一张壁纸」（经 ExecuteHotkeyAsync 封送 UI 线程）。
+    ///
+    /// 失败语义（验收点）：单次挂接失败（文件缺失 / 解码异常）自动顺延下一条并 InfoBar 提示，
+    /// 不中断定时器与后续轮换——整个方法体自兜异常，任何一条路径都不会把异常抛回定时器 Tick。
+    /// </summary>
+    /// <param name="announceEmptyTargets">
+    /// 没有任何已挂背景窗口时是否弹 InfoBar：热键路径 true（用户主动按键必须得到回应），
+    /// 定时器路径 false（每 5 分钟弹一次「你没挂壁纸」是噪音，状态文本已说明）。
+    /// </param>
+    private async Task RotateWallpaperTickAsync(bool announceEmptyTargets)
+    {
+        try
+        {
+            // —— 目标窗口：当前所有已挂背景的窗口（State.BackgroundPath 非空）——
+            var targets = Windows.Where(w => !string.IsNullOrEmpty(w.State.BackgroundPath)).ToList();
+            if (targets.Count == 0)
+            {
+                WallpaperStatusText = "轮换待命：当前没有已挂背景的窗口。先给任意窗口挂一张背景壁纸，轮换即开始工作。";
+                if (announceEmptyTargets)
+                {
+                    ShowInfo(InfoBarSeverity.Warning,
+                        "「下一张壁纸」未执行：当前没有任何已挂背景的窗口。" +
+                        "请先在窗口详情区选背景文件、或从壁纸库点选条目挂到窗口，然后再按热键。");
+                }
+                return;
+            }
+
+            // —— 候选条目：只从扫描判定可用（IsUsable）的条目里挑，不可用条目天然被排除 ——
+            List<string> usablePaths = LibraryItems.Where(i => i.IsUsable).Select(i => i.Path).ToList();
+            if (usablePaths.Count == 0)
+            {
+                WallpaperStatusText = "轮换待命：壁纸库还没有可用条目。点「检索壁纸库」扫描后重试。";
+                if (announceEmptyTargets)
+                {
+                    ShowInfo(InfoBarSeverity.Warning,
+                        "「下一张壁纸」未执行：壁纸库中没有任何可用条目。" +
+                        "请先在壁纸库点「检索壁纸库」，确认有可挂接条目后再试。");
+                }
+                return;
+            }
+
+            // —— round-robin 选条目（纯函数）：一轮播完时清空本轮集合从头再来 ——
+            string? path = WallpaperRotationRules.PickNextRotationPath(usablePaths, _rotationPlayedThisRound, _lastRotatedPath);
+            if (path is null)
+            {
+                _rotationPlayedThisRound.Clear();
+                path = WallpaperRotationRules.PickNextRotationPath(usablePaths, _rotationPlayedThisRound, _lastRotatedPath);
+                if (path is null)
+                {
+                    return; // 理论不可达（usablePaths 非空时第二次调用必命中）；防御性收口
+                }
+            }
+
+            _rotationPlayedThisRound.Add(path);
+            _lastRotatedPath = path;
+
+            // —— 逐窗口挂接，失败顺延：候选尝试上限 = 可用条目数（全部失败则停下，不空转） ——
+            for (int attempt = 0; attempt < usablePaths.Count; attempt++)
+            {
+                if (attempt > 0)
+                {
+                    // 顺延：上一条挂接失败，取 round-robin 的下一条（同样计入本轮已播，失败条目本轮不再重试）
+                    path = WallpaperRotationRules.PickNextRotationPath(usablePaths, _rotationPlayedThisRound, _lastRotatedPath);
+                    if (path is null)
+                    {
+                        _rotationPlayedThisRound.Clear();
+                        path = WallpaperRotationRules.PickNextRotationPath(usablePaths, _rotationPlayedThisRound, _lastRotatedPath);
+                        if (path is null)
+                        {
+                            break;
+                        }
+                    }
+
+                    _rotationPlayedThisRound.Add(path);
+                    _lastRotatedPath = path;
+                }
+
+                string appliedPath = path;
+                WallpaperLibraryItemViewModel? item = LibraryItems.FirstOrDefault(i => i.Path == appliedPath);
+                string describe = item is null
+                    ? Path.GetFileName(appliedPath)
+                    : $"{item.SourceLabel} · {item.KindLabel}：{item.Title}";
+
+                WallpaperStatusText = $"正在轮换背景：{describe}…";
+
+                int attemptSuccess = 0;
+                Exception? lastError = null;
+                foreach (var target in targets)
+                {
+                    try
+                    {
+                        // 更新走 WallpaperService 既有的 _updateGates 串行闸门与线程池加载，
+                        // 不在本层另建并发控制（与档案恢复管线同一纪律）
+                        await _services.Wallpaper.UpdateWallpaperAsync(target.Hwnd, appliedPath);
+                        attemptSuccess++;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastError = ex;
+                        ShowInfo(InfoBarSeverity.Warning,
+                            $"轮换：窗口「{target.DisplayName}」挂接「{describe}」失败：{ex.Message}。" +
+                            "该窗口保持原壁纸；其余窗口继续轮换。");
+                    }
+                }
+
+                if (attemptSuccess == 0)
+                {
+                    // 该条目在【全部】目标窗口上都失败（文件缺失 / 解码异常的可能性最大）：
+                    // InfoBar 提示后顺延下一条，定时器与后续轮换不受影响
+                    ShowInfo(InfoBarSeverity.Error,
+                        $"轮换：「{describe}」挂接失败" +
+                        (lastError is null ? "。" : $"：{lastError.Message}") +
+                        "已自动顺延下一条；若该文件已移动或损坏，请重新检索壁纸库。");
+                    continue;
+                }
+
+                // —— 成功（至少一个窗口挂上）：把新路径写入各窗口档案并持久化，
+                //     重启后经既有恢复管线恢复到轮换后的最后一张（验收点）——
+                BackgroundType backgroundType = DetectBackgroundType(appliedPath);
+                foreach (var target in targets)
+                {
+                    target.State.BackgroundPath = appliedPath;
+                    target.State.Background = backgroundType;
+                    PersistState(target.State);
+                }
+
+                WallpaperFilePathText = appliedPath;
+                WallpaperStatusText = $"壁纸已轮换（{describe}）。";
+                return; // 本轮轮换完成
+            }
+
+            WallpaperStatusText = "轮换未完成：本轮候选条目全部挂接失败，定时器保持运行，下个周期继续。";
+        }
+        catch (Exception ex)
+        {
+            // 兜底：轮换是后台定时行为，任何意外都不能把异常抛回定时器 Tick
+            //（DispatcherQueueTimer 事件内的未观察异常会让 Tick 静默停摆，表现为「轮换悄悄死了」）
+            WallpaperStatusText = $"轮换出错：{ex.Message}";
+            ShowInfo(InfoBarSeverity.Error,
+                $"壁纸轮换出错：{ex.Message}。定时器保持运行，下个周期自动重试；持续失败请查看 %LOCALAPPDATA%\\WinCanvas\\logs。");
+        }
     }
 }
