@@ -38,6 +38,14 @@ public partial class WindowItemViewModel : ObservableObject
     public string Subtitle { get; }
 
     /// <summary>
+    /// UIA 里这一行读出来的名字。
+    /// WinUI 在 DataTemplate 没有给容器显式 Name 时，回落到 <c>ToString()</c>；
+    /// 不覆写的话每一行都念成「WinCanvas.App.ViewModels.WindowItemViewModel」，
+    /// 屏幕阅读器与无障碍工具（以及任何按名字定位行的自动化）完全用不了这个列表。
+    /// </summary>
+    public override string ToString() => $"{DisplayName} — {Subtitle}";
+
+    /// <summary>
     /// 是否匹配搜索关键字（标题 / 进程名 / 类名，不区分大小写，子串匹配）。
     /// 供主界面的窗口搜索框使用——多窗口场景下靠滚动找目标太慢。
     /// </summary>

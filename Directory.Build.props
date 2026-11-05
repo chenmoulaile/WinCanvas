@@ -22,7 +22,7 @@
          文件版本恒为 1.0.0.0，而 git tag 是 v0.1.1、安装包靠命令行
          /DMyAppVersion="0.1.1" 手工传 —— 三套版本口径互不相干；
          且 .iss 未设 VersionInfoVersion，Inno Setup 的升降级文件版本比较失效。 -->
-    <WinCanvasVersion>0.3.1</WinCanvasVersion>
+    <WinCanvasVersion>0.3.2</WinCanvasVersion>
     <Version>$(WinCanvasVersion)</Version>
     <AssemblyVersion>$(WinCanvasVersion).0</AssemblyVersion>
     <FileVersion>$(WinCanvasVersion).0</FileVersion>

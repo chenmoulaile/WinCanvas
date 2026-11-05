@@ -46,6 +46,14 @@ public sealed partial class WallpaperLibraryItemViewModel : ObservableObject
         _ => KindOfFile(_entry.Path),
     };
 
+    /// <summary>
+    /// UIA 里这个条目读出来的名字（同 <see cref="WindowItemViewModel"/>：
+    /// 不覆写就念成类型名，上百条壁纸在无障碍工具与自动化脚本里全都无法区分）。
+    /// </summary>
+    public override string ToString() => _entry.IsUsable
+        ? $"{Title} — {KindLabel}"
+        : $"{Title} — {KindLabel}（不可用：{_entry.UnusableReason}）";
+
     /// <summary>是否可能发声。</summary>
     public bool MightHaveAudio => _entry.MightHaveAudio;
 

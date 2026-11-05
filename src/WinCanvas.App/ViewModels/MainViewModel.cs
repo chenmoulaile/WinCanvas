@@ -54,6 +54,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>反向同步标志：初始化从配置回填「启动自动恢复」开关值时，不触发回写与提示（WP3）。</summary>
     private bool _suppressAutoRestoreSync;
 
+    /// <summary>「自动恢复已关闭」的提示每次会话只说一次（刷新会反复走同一条分支）。</summary>
+    private bool _restoreDisabledNoticeShown;
+
     /// <summary>上一个选中项（用于换选时退订 PropertyChanged）。</summary>
     private WindowItemViewModel? _previousSelected;
 
@@ -485,6 +488,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // 开关关闭：跳过整个管线（DoD「关闭后零恢复动作」的日志证据即本行）。
             // 档案仍保留在配置中不受影响；重新开启开关后重启应用即可恢复。
             RestoreDiagnostics.Log($"档案恢复管线：AutoRestoreOnStartup=false，跳过全部恢复（本次枚举 {items.Count} 项）。");
+
+            // 但【必须在界面上说出来】：档案里存着背景壁纸与窗口属性，开关却关着，
+            // 用户看到的就是「挂好的壁纸重启后全没了，什么功能都像失效」——
+            // 而日志在 %LOCALAPPDATA% 里，没人会去翻。沉默不是中性的，它会被读成故障。
+            // 每次会话只提一次：本方法在每次刷新都会被调用，反复弹提示同样是噪音。
+            if (!_restoreDisabledNoticeShown && _appConfig.Windows.Count > 0)
+            {
+                _restoreDisabledNoticeShown = true;
+                ShowInfo(InfoBarSeverity.Informational,
+                    $"「启动时自动恢复」已关闭：配置里存有 {_appConfig.Windows.Count} 份窗口档案"
+                    + "（含背景壁纸），启动与刷新时都不会应用。需要恢复请在「设置」页打开该开关。");
+            }
+
             return;
         }
 
