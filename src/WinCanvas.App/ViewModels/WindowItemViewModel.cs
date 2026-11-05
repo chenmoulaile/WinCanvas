@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using WinCanvas.App.Native;
+using WinCanvas.App.Services;
 using WinCanvas.Core.Interfaces;
 using WinCanvas.Core.Models;
 using WinCanvas.Core.Services;
@@ -26,6 +27,18 @@ public partial class WindowItemViewModel : ObservableObject
 
     /// <summary>隐私开关变化回调（由 MainViewModel 注入）：据此启停前台监听钩子线程。</summary>
     private readonly Action _notifyPrivacyChanged;
+
+    /// <summary>
+    /// 屏幕外跳过的对外提示回调（由 MainViewModel 注入）：档案矩形不在任何显示器上时
+    /// 提示「失败 + 原因 + 怎么办」，与其它失败路径同一套呈现通道（InfoBar）。
+    /// </summary>
+    private readonly Action<WindowBounds> _reportBoundsSkippedOffscreen;
+
+    /// <summary>
+    /// 几何捕获成功的对外提示回调（由 MainViewModel 注入）：告知用户记住了什么值，
+    /// 让「记住当前位置」有可见反馈而不是静默改档案。
+    /// </summary>
+    private readonly Action<WindowBounds> _reportBoundsCaptured;
 
     /// <summary>
     /// 构造回填抑制标志：构造函数里从档案回填 <see cref="IsPrivacyEnabled"/> 会触发
@@ -147,7 +160,9 @@ public partial class WindowItemViewModel : ObservableObject
         Action<WindowState> persist,
         Action<string> reportError,
         Action<IReadOnlyList<PrivacyMaskRules.PrivacyMaskTransition>> enqueuePrivacyTransitions,
-        Action notifyPrivacyChanged)
+        Action notifyPrivacyChanged,
+        Action<WindowBounds> reportBoundsSkippedOffscreen,
+        Action<WindowBounds> reportBoundsCaptured)
     {
         Info = info;
         State = state;
@@ -156,6 +171,8 @@ public partial class WindowItemViewModel : ObservableObject
         _reportError = reportError;
         _enqueuePrivacyTransitions = enqueuePrivacyTransitions;
         _notifyPrivacyChanged = notifyPrivacyChanged;
+        _reportBoundsSkippedOffscreen = reportBoundsSkippedOffscreen;
+        _reportBoundsCaptured = reportBoundsCaptured;
 
         DisplayName = string.IsNullOrWhiteSpace(info.Title) ? "（无标题窗口）" : info.Title;
         Subtitle = $"{info.ProcessName} ({info.ProcessId}) · {info.ClassName}";
@@ -180,7 +197,13 @@ public partial class WindowItemViewModel : ObservableObject
     /// 不能用翻转语义，否则窗口实际已置顶（本次会话设置过 / 刷新后重新选中）时，
     /// 恢复动作反而会把置顶翻掉并把错误状态写盘。
     /// </summary>
-    public async Task RestoreAsync()
+    /// <param name="restoreBounds">
+    /// 是否连窗口几何一起恢复（窗口位置记忆工作包新增）。
+    /// 只允许启动恢复管线传 true —— 那是「档案值应生效」的时刻；
+    /// 手动选中也传 true 会造成「点一下列表窗口就跳回档案位置」，未被要求也不合直觉。
+    /// 几何分支内部自带 IsIconic / IsZoomed 预检与屏幕外判定。
+    /// </param>
+    public async Task RestoreAsync(bool restoreBounds = false)
     {
         try
         {
@@ -224,6 +247,39 @@ public partial class WindowItemViewModel : ObservableObject
             Corner = State.Corner;
             Alpha = State.Alpha;
 
+            // —— 几何分支（窗口位置记忆工作包）：恢复档案矩形，自带三道预检 ——
+            // ① 最小化（IsIconic）：窗口矩形是 (-32000,-32000) 挂起坐标，应用即错位，跳过；
+            // ② 最大化（IsZoomed）：保持最大化状态，不做普通几何应用，避免破坏最大化；
+            // ③ 屏幕外：档案矩形与当前全部显示器都不相交（改分辨率/拔屏后），跳过并提示。
+            // 三者都只跳过本次应用，档案值一律保留（用户可能只是暂时最小化 / 临时改分辨率）。
+            if (restoreBounds && State.HasBounds)
+            {
+                WindowMinMaxState minMax = await _windowControl.GetMinMaxStateAsync(Hwnd);
+                if (minMax.IsIconic)
+                {
+                    RestoreDiagnostics.Log($"几何恢复：hwnd=0x{Hwnd:X}「{DisplayName}」处于最小化，跳过几何应用（档案值保留）。");
+                }
+                else if (minMax.IsZoomed)
+                {
+                    RestoreDiagnostics.Log($"几何恢复：hwnd=0x{Hwnd:X}「{DisplayName}」处于最大化，跳过几何应用（保持最大化状态）。");
+                }
+                else
+                {
+                    var archived = State.ToBounds();
+                    IReadOnlyList<WindowBounds> monitors = await _windowControl.GetMonitorRectsAsync();
+                    if (!WindowBounds.IsOnAnyMonitor(archived, monitors))
+                    {
+                        RestoreDiagnostics.Log($"几何恢复：hwnd=0x{Hwnd:X}「{DisplayName}」档案矩形 {archived} 不在任何显示器上，跳过。");
+                        _reportBoundsSkippedOffscreen(archived);
+                    }
+                    else
+                    {
+                        await _windowControl.SetWindowBoundsAsync(Hwnd, archived);
+                        RestoreDiagnostics.Log($"几何恢复：hwnd=0x{Hwnd:X}「{DisplayName}」已应用档案矩形 {archived}。");
+                    }
+                }
+            }
+
             // 隐私遮蔽协同（隐私窗口工作包）：若该窗口当前处于遮蔽态，档案恢复会把
             // alpha 抬回档案值（用户能看见内容）——必须立刻重新套遮蔽，
             // 否则「在列表里选中一下」就把被保护的内容曝光了。
@@ -238,6 +294,36 @@ public partial class WindowItemViewModel : ObservableObject
             // UIPI 专项（WP5）：错误 5 时给出「以管理员身份重启」引导，其余保持原语义
             _reportError(ProcessElevation.DescribeFailure(
                 ex, $"恢复窗口「{DisplayName}」的已保存属性"));
+        }
+    }
+
+    /// <summary>
+    /// 「记住当前位置」捕获命令（窗口位置记忆工作包）：把窗口当前矩形写入档案并实时保存。
+    /// 捕获前置检查：最小化 / 最大化窗口一律不捕获——最小化矩形是 -32000 挂起值、
+    /// 最大化矩形恢复成普通窗口语义也是错的；两者都保持档案不变。
+    /// </summary>
+    public async Task CaptureCurrentBoundsAsync()
+    {
+        try
+        {
+            WindowMinMaxState minMax = await _windowControl.GetMinMaxStateAsync(Hwnd);
+            if (minMax.IsIconic || minMax.IsZoomed)
+            {
+                _reportError(
+                    $"未能记住「{DisplayName}」的当前位置：" +
+                    (minMax.IsIconic ? "窗口处于最小化状态，此时记录的坐标是系统挂起值。" : "窗口处于最大化状态，此时记录的尺寸是最大化尺寸。") +
+                    "请先把窗口还原成普通大小，再点「记住当前位置」。");
+                return;
+            }
+
+            WindowBounds current = await _windowControl.GetWindowBoundsAsync(Hwnd);
+            State.SetBounds(current);
+            _persist(State);
+            _reportBoundsCaptured(current);
+        }
+        catch (Exception ex)
+        {
+            _reportError(ProcessElevation.DescribeFailure(ex, $"记住窗口「{DisplayName}」的当前位置"));
         }
     }
 

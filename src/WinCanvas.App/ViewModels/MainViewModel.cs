@@ -246,6 +246,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     public partial string SelectedHwndText { get; set; } = string.Empty;
 
+    /// <summary>选中窗口的几何档案摘要（详情区「记住当前位置」旁的说明行）。</summary>
+    [ObservableProperty]
+    public partial string SelectedBoundsArchiveText { get; set; } = "尚未记住位置。";
+
+    /// <summary>按选中窗口的档案刷新几何摘要文本（换选与捕获后调用）。</summary>
+    private void RefreshSelectedBoundsText()
+    {
+        WindowState? s = Selected?.State;
+        SelectedBoundsArchiveText = s is { HasBounds: true }
+            ? $"已记住：({s.X}, {s.Y}) {s.Width}×{s.Height}（物理像素）"
+            : "尚未记住位置：点「记住当前位置」捕获一次（应用真退出时也会自动捕获）。";
+    }
+
     [ObservableProperty]
     public partial bool SelectedIsTopmost { get; set; }
 
@@ -324,6 +337,33 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [ObservableProperty]
+    public partial bool RestoreWindowBoundsOnStartup { get; set; }
+
+    /// <summary>
+    /// 「恢复窗口位置与尺寸」子开关变化（窗口位置记忆工作包）：
+    /// 是「启动时自动恢复」之下的独立子开关，写回内存配置并走既有防抖落盘通道。
+    /// 初始化回填（_suppressBoundsRestoreSync）时静默；关闭后启动 / 刷新均不做几何应用，
+    /// 已捕获的档案值保留不受影响。
+    /// </summary>
+    partial void OnRestoreWindowBoundsOnStartupChanged(bool value)
+    {
+        if (_suppressBoundsRestoreSync)
+        {
+            return; // 初始化从配置回填：值本就来自配置，不回写、不提示
+        }
+
+        _appConfig.RestoreWindowBoundsOnStartup = value;
+        PersistConfig();
+        ShowInfo(InfoBarSeverity.Informational, value
+            ? "窗口位置恢复已开启：下次启动应用时，已「记住当前位置」的窗口将恢复到档案位置与尺寸" +
+              "（最小化 / 最大化 / 屏幕外的窗口自动跳过）。"
+            : "窗口位置恢复已关闭：启动与刷新时不再移动任何窗口，已记住的位置档案保留不变。");
+    }
+
+    /// <summary>「恢复窗口位置与尺寸」开关的初始化回填抑制标志（与 _suppressAutoRestoreSync 同一模式）。</summary>
+    private bool _suppressBoundsRestoreSync;
+
+    [ObservableProperty]
     public partial bool WinTipsEnabled { get; set; }
 
     [ObservableProperty]
@@ -376,6 +416,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _suppressAutoRestoreSync = true;
         AutoRestoreOnStartup = _appConfig.AutoRestoreOnStartup;
         _suppressAutoRestoreSync = false;
+
+        // 「恢复窗口位置与尺寸」子开关回填（窗口位置记忆工作包，同一套抑制模式）
+        _suppressBoundsRestoreSync = true;
+        RestoreWindowBoundsOnStartup = _appConfig.RestoreWindowBoundsOnStartup;
+        _suppressBoundsRestoreSync = false;
 
         // 隐私窗口（隐私窗口工作包）：回填主窗口遮罩总开关并接好前台监听事件
         InitializePrivacyFromConfig();
@@ -441,7 +486,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     PersistState,
                     message => ShowInfo(InfoBarSeverity.Error, message),
                     EnqueuePrivacyTransitions,
-                    OnItemPrivacyChanged);
+                    OnItemPrivacyChanged,
+                    bounds => ShowInfo(InfoBarSeverity.Warning,
+                        $"未恢复窗口位置：档案矩形 {bounds} 落在当前全部显示器可见区域之外" +
+                        "（可能是改了分辨率或拔掉了显示器）。窗口位置保持原样，档案值已保留；" +
+                        "把窗口拖到想要的位置后点「记住当前位置」可更新档案。"),
+                    bounds => ShowInfo(InfoBarSeverity.Informational,
+                        $"已记住「记住当前位置」：{bounds}。下次启动时（开启自动恢复与位置恢复子开关）将恢复到该位置与尺寸。"));
                 Windows.Add(item);
 
                 // 刷新后尽量按句柄 / 组合键恢复之前的选中项
@@ -517,6 +568,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // 无档案窗口在枚举时新建的临时 State 不在列表里，天然被过滤（也避免为默认值窗口空跑）。
         var archived = items.Where(i => _appConfig.Windows.Contains(i.State)).ToList();
 
+        // —— 几何目标标记（窗口位置记忆工作包）——
+        // 子开关关闭时集合为空 = 本条管线零窗口移动（验收「关闭时不发生任何窗口移动」）；
+        // 同 Key 多窗口（同一进程多窗口共享一份档案）只对【枚举到的第一个】应用几何，
+        // 其余不动——枚举顺序在 UI 线程此刻确定并冻结进集合，后台只读不再变更
+        //（并发纪律：几何目标集只在 UI 线程写、移交管线线程后只读，无需加锁）。
+        var geometryTargets = new HashSet<WindowItemViewModel>();
+        if (_appConfig.RestoreWindowBoundsOnStartup)
+        {
+            var seenKeys = new HashSet<string>();
+            foreach (var item in archived)
+            {
+                if (item.State.HasBounds && seenKeys.Add(item.State.Key))
+                {
+                    geometryTargets.Add(item);
+                }
+            }
+        }
+
         // 任务链串行：与上一条管线汇合后再跑本条，杜绝两条管线并发重复恢复
         var previous = _restorePipelineTask;
         _restorePipelineTask = Task.Run(async () =>
@@ -524,7 +593,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             try
             {
                 await previous.ConfigureAwait(false);
-                await RunRestorePipelineCoreAsync(archived).ConfigureAwait(false);
+                await RunRestorePipelineCoreAsync(archived, geometryTargets).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -540,7 +609,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// 单窗口的属性应用封送 UI 线程（见 <see cref="RestorePropertiesOnUiThreadAsync"/>），
     /// 壁纸加载走 WallpaperService 内部的线程池与 _updateGates 串行闸门。
     /// </summary>
-    private async Task RunRestorePipelineCoreAsync(List<WindowItemViewModel> items)
+    /// <param name="items">待恢复的窗口条目（枚举序）。</param>
+    /// <param name="geometryTargets">
+    /// 本条管线允许应用几何的条目集合（窗口位置记忆工作包）。
+    /// 由 UI 线程在派发前按枚举序冻结（同 Key 只取第一个），此处只读。
+    /// </param>
+    private async Task RunRestorePipelineCoreAsync(List<WindowItemViewModel> items, HashSet<WindowItemViewModel> geometryTargets)
     {
         if (items.Count == 0)
         {
@@ -550,7 +624,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         var startedAt = Environment.TickCount64;
         RestoreDiagnostics.Log($"档案恢复管线：开始，待恢复档案 {items.Count} 个" +
-                               $"（{RestoreDispatchIntervalMs}ms 间隔排队 / 并发上限 {RestoreMaxConcurrency}）。");
+                               $"（{RestoreDispatchIntervalMs}ms 间隔排队 / 并发上限 {RestoreMaxConcurrency}，" +
+                               $"几何目标 {geometryTargets.Count} 个）。");
 
         // 窗口级并发上限（BCL 信号量）：单窗口内部的壁纸更新串行化仍由服务层 _updateGates 负责，
         // 此处限的是「同时恢复几个窗口」，避免启动瞬间对多个目标窗口同时施压。
@@ -559,6 +634,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         for (var i = 0; i < items.Count; i++)
         {
             var item = items[i];
+            bool applyGeometry = geometryTargets.Contains(item); // 派发前冻结，此处只读
 
             // 200ms 间隔逐个排队：第 1 个立即派发，其后每个间隔 200ms（防启动风暴）
             if (i > 0)
@@ -571,7 +647,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 try
                 {
-                    await RestoreOneAsync(item).ConfigureAwait(false);
+                    await RestoreOneAsync(item, applyGeometry).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -590,7 +666,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// 背景会话已存在（会话字典判重）跳过重复加载；背景文件缺失只警告、档案保留
     /// （用户可能只是临时移动文件，规格明确不清除档案）。
     /// </summary>
-    private async Task RestoreOneAsync(WindowItemViewModel item)
+    /// <param name="applyGeometry">
+    /// 是否允许本窗口应用几何（窗口位置记忆工作包）。
+    /// 由管线派发前的几何目标标记决定（同 Key 多窗口只对枚举到的第一个为 true）；
+    /// false 时本窗口的恢复完全不动窗口位置与尺寸。
+    /// </param>
+    private async Task RestoreOneAsync(WindowItemViewModel item, bool applyGeometry)
     {
         var hwnd = item.Hwnd;
         var state = item.State;
@@ -606,13 +687,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
         RestoreDiagnostics.Log(
             $"恢复管线：hwnd=0x{hwnd:X}「{item.DisplayName}」开始恢复" +
             $"（置顶={state.IsTopmost}，透明={state.Alpha}，穿透={state.ClickThrough}，" +
-            $"圆角={state.Corner}，背景={(state.BackgroundPath ?? "无")}）。");
+            $"圆角={state.Corner}，几何={(applyGeometry && state.HasBounds ? $"{state.X},{state.Y} {state.Width}x{state.Height}" : "不应用")}，" +
+            $"背景={(state.BackgroundPath ?? "无")}）。");
 
         try
         {
             // —— 1) 属性恢复：直接复用现有 RestoreAsync（幂等置顶语义已就绪，规格明确勿另写一份），
-            //      经封送在 UI 线程写入可绑定属性（背景见 RestorePropertiesOnUiThreadAsync 注释）
-            await RestorePropertiesOnUiThreadAsync(item).ConfigureAwait(false);
+            //      经封送在 UI 线程写入可绑定属性（背景见 RestorePropertiesOnUiThreadAsync 注释）；
+            //      applyGeometry=true 时 RestoreAsync 内部走几何分支（IsIconic/IsZoomed/屏幕外三道预检）
+            await RestorePropertiesOnUiThreadAsync(item, applyGeometry).ConfigureAwait(false);
 
             // —— 2) 壁纸恢复：档案背景路径非空且文件存在 → 交给既有 UpdateWallpaperAsync
             //      （内部经 _updateGates 串行 + 线程池加载，解码 / 解包重活不占 UI 线程）
@@ -667,14 +750,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// 规格「禁止在 UI 线程同步串行执行全部恢复」指的是不让 UI 线程阻塞式逐个跑完，
     /// 本实现按 200ms 间隔从后台管线逐个封送，UI 线程任意时刻只持有一个待完成的轻量恢复片。
     /// </summary>
-    private Task RestorePropertiesOnUiThreadAsync(WindowItemViewModel item)
+    /// <param name="restoreBounds">透传给 RestoreAsync：true 时连窗口几何一起恢复（仅启动管线几何目标为 true）。</param>
+    private Task RestorePropertiesOnUiThreadAsync(WindowItemViewModel item, bool restoreBounds)
     {
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (_dispatcherQueue.TryEnqueue(async () =>
             {
                 try
                 {
-                    await item.RestoreAsync();
+                    // restoreBounds 只在启动恢复管线路径为 true（几何目标），手动选中路径恒 false
+                    await item.RestoreAsync(restoreBounds);
                     // 隐私协同（隐私窗口工作包）：恢复可能晚于初始遮蔽链把 alpha 抬回档案值，
                     // 恢复完成后按当前状态补一次遮蔽决策（串行链收口竞态，见 QueuePrivacyRemaskAfterRestore）
                     QueuePrivacyRemaskAfterRestore(item);
@@ -719,6 +804,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             : CornerOptions.FirstOrDefault(o => o.Value == value.Corner) ?? CornerOptions[0];
         WallpaperFilePathText = value?.State.BackgroundPath ?? "（未选择）";
         _suppressSelectedSync = false;
+        RefreshSelectedBoundsText();
 
         if (value is not null)
         {
@@ -799,6 +885,93 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         OnPropertyChanged(nameof(DetailVisibility));
         OnPropertyChanged(nameof(EmptyVisibility));
+    }
+
+    // ---------- 窗口几何（窗口位置记忆工作包） ----------
+
+    /// <summary>
+    /// 「记住当前位置」按钮：把选中窗口当前的矩形写入档案并实时保存。
+    /// 实际捕获逻辑在 <see cref="WindowItemViewModel.CaptureCurrentBoundsAsync"/>
+    /// （最小化 / 最大化不捕获，失败经 DescribeFailure 提示）。
+    /// </summary>
+    [RelayCommand]
+    private async Task CaptureSelectedBoundsAsync()
+    {
+        var item = Selected;
+        if (item is null)
+        {
+            ShowInfo(InfoBarSeverity.Warning, "请先在左侧选择一个窗口，再点「记住当前位置」。");
+            return;
+        }
+
+        await item.CaptureCurrentBoundsAsync();
+        RefreshSelectedBoundsText();
+    }
+
+    /// <summary>
+    /// 应用真退出时的一次性几何捕获（窗口位置记忆工作包，验收点：真退出时自动捕获一次）。
+    ///
+    /// 调用时机与约束：只在 <see cref="Dispose"/> 里走，而 Dispose 由主窗口 Closed 回调在
+    /// UI 线程调用——此刻消息循环即将结束，异步派发可能没有机会完成，所以这里全部走
+    /// <see cref="IWindowControlService.TryGetWindowBoundsSync"/> / GetMinMaxStateSync 的同步路径
+    /// （Win32 单次调用微秒级，窗口数量几十个，不会拖住退出）。
+    /// 落盘纪律：只更新【已有档案】的窗口，不为未建档窗口凭空建档（与 RefreshAsync 的
+    /// 「落盘推迟到用户实际修改时」同一口径）；最小化（-32000 挂起矩形）与最大化（会把
+    /// 最大化尺寸存成普通矩形）的窗口跳过，保持档案原值。MainWindow.Closed 在本方法之后
+    /// 调 Configuration.Flush() 同步写盘，本方法触发的防抖落盘不会丢。
+    /// </summary>
+    private void CaptureWindowBoundsForExit()
+    {
+        int captured = 0;
+        int skippedMinMax = 0;
+
+        foreach (var item in Windows.ToArray())
+        {
+            WindowState state = item.State;
+
+            // 只捕获已有档案的窗口；档案集合可能被后台恢复管线的 PersistState 并发 Add，
+            // Contains 判断放进配置锁（与 PersistState 同一把锁，见 _configGate 注释）
+            lock (_configGate)
+            {
+                if (!_appConfig.Windows.Contains(state))
+                {
+                    continue;
+                }
+            }
+
+            try
+            {
+                WindowMinMaxState minMax = _services.WindowControl.GetMinMaxStateSync(item.Hwnd);
+                if (minMax.IsIconic || minMax.IsZoomed)
+                {
+                    skippedMinMax++;
+                    RestoreDiagnostics.Log($"退出捕获：「{item.DisplayName}」处于{(minMax.IsIconic ? "最小化" : "最大化")}，" +
+                                           "跳过几何捕获（档案值保持原样）。");
+                    continue;
+                }
+
+                WindowBounds? bounds = _services.WindowControl.TryGetWindowBoundsSync(item.Hwnd);
+                if (bounds is not { Width: > 0, Height: > 0 } valid)
+                {
+                    RestoreDiagnostics.Log($"退出捕获：「{item.DisplayName}」矩形不可读（窗口可能已关闭），跳过。");
+                    continue;
+                }
+
+                state.SetBounds(valid);
+                captured++;
+            }
+            catch (Exception ex)
+            {
+                // 退出路径不因单个窗口失败中断：记日志、保档案原值
+                RestoreDiagnostics.Log($"退出捕获：「{item.DisplayName}」失败（{ex.Message}），档案值保持原样。");
+            }
+        }
+
+        if (captured > 0 || skippedMinMax > 0)
+        {
+            PersistConfig();
+            RestoreDiagnostics.Log($"退出捕获完成：更新 {captured} 份档案的几何，跳过最小化/最大化 {skippedMinMax} 个。");
+        }
     }
 
     // ---------- 壁纸 ----------
@@ -997,6 +1170,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public void Dispose()
     {
+        // 真退出时自动捕获一次各档案窗口的当前几何（窗口位置记忆工作包）：
+        // 必须在 Flush 前写进内存配置——MainWindow.Closed 随后调 Configuration.Flush() 同步落盘
+        CaptureWindowBoundsForExit();
+
         // 壁纸库扫描若还在跑：作废它（扫描体只读快照，取消即安全丢弃；
         // CTS 的生命周期说明见 WallpaperLibrary partial——刻意不 Dispose，只 Cancel）。
         _libraryScanCts?.Cancel();

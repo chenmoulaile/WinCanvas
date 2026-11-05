@@ -67,4 +67,52 @@ public interface IWindowControlService
     /// <param name="hwnd">目标窗口句柄。</param>
     /// <param name="preference">圆角偏好。</param>
     Task SetCornerPreferenceAsync(IntPtr hwnd, CornerPreference preference);
+
+    // ===== 窗口几何（窗口位置记忆工作包新增） =====
+
+    /// <summary>
+    /// 读取窗口当前的外接矩形（物理像素、虚拟桌面坐标，与 SetWindowPos 同一口径）。
+    /// 句柄无效或 GetWindowRect 失败时抛 <see cref="Win32Exception"/>（与既有失败语义一致）。
+    /// </summary>
+    /// <param name="hwnd">目标窗口句柄。</param>
+    /// <returns>窗口当前矩形。注意：最小化窗口返回的是 (-32000,-32000) 挂起矩形，
+    /// 调用方须先用 <see cref="GetMinMaxStateAsync"/> 预检。</returns>
+    Task<WindowBounds> GetWindowBoundsAsync(IntPtr hwnd);
+
+    /// <summary>
+    /// 应用窗口矩形（位置 + 尺寸，SetWindowPos，不改 Z 序、不抢焦点）。
+    /// 幂等语义：对已处于目标几何的窗口重复调用无副作用（位置差为 0 时窗口不动）。
+    /// </summary>
+    /// <param name="hwnd">目标窗口句柄。</param>
+    /// <param name="bounds">目标矩形（物理像素）。</param>
+    Task SetWindowBoundsAsync(IntPtr hwnd, WindowBounds bounds);
+
+    /// <summary>
+    /// 读取窗口的最小化 / 最大化状态（IsIconic / IsZoomed）。
+    /// 几何恢复与几何捕获前都必须先查：最小化窗口的矩形是 -32000 挂起值、
+    /// 最大化窗口应保持最大化而不是被改写成普通矩形。
+    /// </summary>
+    /// <param name="hwnd">目标窗口句柄。</param>
+    /// <returns>状态快照；句柄无效时两个标志均为 false（与 Win32 语义一致，调用方另行预检存活）。</returns>
+    Task<WindowMinMaxState> GetMinMaxStateAsync(IntPtr hwnd);
+
+    /// <summary>
+    /// 枚举当前会话全部显示器的矩形（物理像素，虚拟桌面坐标）。
+    /// 供「档案矩形是否落在任何显示器上」的屏幕外判定使用。
+    /// </summary>
+    /// <returns>每台显示器一条矩形；枚举失败抛 <see cref="Win32Exception"/>。</returns>
+    Task<IReadOnlyList<WindowBounds>> GetMonitorRectsAsync();
+
+    /// <summary>
+    /// 同步读取窗口当前矩形；失败或句柄无效返回 null（不抛）。
+    /// 仅供【应用退出】的一次性捕获路径使用：那里处在窗口关闭回调中，
+    /// 消息循环即将结束，异步派发可能没有机会完成，必须同步拿结果；
+    /// 常规业务路径请用 <see cref="GetWindowBoundsAsync"/>。
+    /// </summary>
+    WindowBounds? TryGetWindowBoundsSync(IntPtr hwnd);
+
+    /// <summary>
+    /// 同步读取窗口最小化 / 最大化状态。使用场景限制同 <see cref="TryGetWindowBoundsSync"/>。
+    /// </summary>
+    WindowMinMaxState GetMinMaxStateSync(IntPtr hwnd);
 }

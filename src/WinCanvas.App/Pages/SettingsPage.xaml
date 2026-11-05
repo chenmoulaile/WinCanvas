@@ -36,6 +36,17 @@
                                   IsOn="{x:Bind ViewModel.AutoRestoreOnStartup, Mode=TwoWay}"
                                   AutomationProperties.Name="启动时自动恢复窗口状态与背景" />
 
+                    <!-- 窗口位置记忆（窗口位置记忆工作包）：挂在上面的启动自动恢复之下的独立子开关。
+                         关闭时不移动任何窗口，已记住的位置档案保留。 -->
+                    <ToggleSwitch Margin="24,0,0,0"
+                                  Header="恢复窗口位置与尺寸"
+                                  IsOn="{x:Bind ViewModel.RestoreWindowBoundsOnStartup, Mode=TwoWay}"
+                                  AutomationProperties.Name="启动恢复时连同窗口的位置与尺寸一起恢复" />
+                    <TextBlock Margin="24,0,0,0"
+                               Text="开启后，已「记住当前位置」（窗口与壁纸页的按钮，应用真退出时也会自动捕获）的窗口在下次启动时恢复到档案位置与尺寸；最小化 / 最大化窗口自动跳过，档案位置落在所有显示器之外时跳过并提示。"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.7" TextWrapping="Wrap" />
+
                     <!-- 隐私遮罩（隐私窗口工作包）：主窗口失焦时自动遮蔽内容，点回窗口立即恢复 -->
                     <ToggleSwitch Header="主窗口失焦显示隐私遮罩"
                                   IsOn="{x:Bind ViewModel.PrivacyOverlayEnabled, Mode=TwoWay}"

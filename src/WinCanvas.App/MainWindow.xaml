@@ -221,6 +221,20 @@
                                                           MaxColumns="3"
                                                           ItemsSource="{x:Bind ViewModel.CornerOptions, Mode=OneWay}"
                                                           SelectedItem="{x:Bind ViewModel.SelectedCorner, Mode=TwoWay}" />
+
+                                            <!-- 窗口位置记忆（窗口位置记忆工作包）：把当前矩形写入档案。
+                                                 恢复时机与子开关在「设置」页（挂在启动自动恢复之下）。
+                                                 最小化 / 最大化时捕获会被拒绝并说明原因。 -->
+                                            <StackPanel Spacing="4">
+                                                <StackPanel Orientation="Horizontal" Spacing="12">
+                                                    <Button Command="{x:Bind ViewModel.CaptureSelectedBoundsCommand}"
+                                                            AutomationProperties.Name="记住所选窗口当前的位置与尺寸"
+                                                            Content="记住当前位置" />
+                                                </StackPanel>
+                                                <TextBlock Text="{x:Bind ViewModel.SelectedBoundsArchiveText, Mode=OneWay}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Opacity="0.7" TextWrapping="Wrap" />
+                                            </StackPanel>
                                         </StackPanel>
                                     </Border>
 

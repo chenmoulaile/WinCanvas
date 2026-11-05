@@ -50,4 +50,37 @@ public sealed class WindowState
     /// 默认 false：遮蔽会改变窗口外观，属于用户逐窗口显式授权的行为了解成本，不可默认替用户开启。
     /// </summary>
     public bool PrivacyEnabled { get; set; }
+
+    // ===== 窗口几何（窗口位置记忆工作包新增） =====
+    // 坐标与尺寸均为物理像素（与 Win32 GetWindowRect / SetWindowPos 同一口径，见 WindowBounds）。
+    // 只有 HasBounds=true 时 X/Y/Width/Height 才有意义：几何只在用户点「记住当前位置」
+    // 或应用真退出时捕获一次，不捕获就恢复等于替用户乱动窗口。
+
+    /// <summary>是否已捕获过窗口几何。false 时下列四个字段不参与恢复（保留默认值）。</summary>
+    public bool HasBounds { get; set; }
+
+    /// <summary>档案记录的窗口左上角 X（物理像素）。</summary>
+    public int X { get; set; }
+
+    /// <summary>档案记录的窗口左上角 Y（物理像素）。</summary>
+    public int Y { get; set; }
+
+    /// <summary>档案记录的窗口宽度（物理像素）。</summary>
+    public int Width { get; set; }
+
+    /// <summary>档案记录的窗口高度（物理像素）。</summary>
+    public int Height { get; set; }
+
+    /// <summary>把几何字段组装成 <see cref="WindowBounds"/>（口径单一来源，避免散落的字段拼装）。</summary>
+    public WindowBounds ToBounds() => new(X, Y, Width, Height);
+
+    /// <summary>用 <see cref="WindowBounds"/> 覆盖几何字段并置 HasBounds=true（捕获路径统一走这里）。</summary>
+    public void SetBounds(WindowBounds bounds)
+    {
+        HasBounds = true;
+        X = bounds.X;
+        Y = bounds.Y;
+        Width = bounds.Width;
+        Height = bounds.Height;
+    }
 }

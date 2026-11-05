@@ -22,6 +22,15 @@ public sealed class AppConfig
     /// </summary>
     public bool AutoRestoreOnStartup { get; set; } = true;
 
+    /// <summary>
+    /// 「启动时自动恢复」之下的独立子开关（窗口位置记忆工作包新增）：
+    /// 启动恢复时是否连窗口的位置与尺寸一起恢复。
+    /// 默认 true：与父开关一致的核心价值主张——重启 / 换显示器后位置不再乱。
+    /// 关闭时不发生任何窗口移动（几何跳过），已捕获的档案值原样保留；
+    /// 父开关关闭时整个恢复管线都不跑，本子开关自然也不生效。
+    /// </summary>
+    public bool RestoreWindowBoundsOnStartup { get; set; } = true;
+
     /// <summary>各窗口的持久化状态（按 <see cref="WindowState.Key"/> 唯一）。</summary>
     public List<WindowState> Windows { get; set; } = new();
 

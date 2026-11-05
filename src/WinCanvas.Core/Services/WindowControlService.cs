@@ -309,6 +309,125 @@ public sealed class WindowControlService : IWindowControlService
         });
     }
 
+    // ===== 窗口几何（窗口位置记忆工作包新增） =====
+
+    /// <inheritdoc/>
+    public Task<WindowBounds> GetWindowBoundsAsync(IntPtr hwnd)
+    {
+        return Task.Run(() =>
+        {
+            EnsureWindowAlive(hwnd);
+            return ReadWindowBoundsOrThrow(hwnd);
+        });
+    }
+
+    /// <inheritdoc/>
+    public Task SetWindowBoundsAsync(IntPtr hwnd, WindowBounds bounds)
+    {
+        return Task.Run(() =>
+        {
+            EnsureWindowAlive(hwnd);
+
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+            {
+                // 尺寸非正是档案损坏的特征值：与其把窗口压成 0×0，不如让调用方拿到明确失败
+                throw new ArgumentException(
+                    $"目标矩形尺寸非法（{bounds.Width}×{bounds.Height}），已拒绝应用。", nameof(bounds));
+            }
+
+            // SWP_NOZORDER|SWP_NOACTIVATE：只动位置尺寸，不重排 Z 序、不抢焦点——
+            // 恢复几何是「把窗口放回原处」，不该顺带改变它的层级或打断用户手头操作。
+            if (!NativeMethods.SetWindowPos(
+                    hwnd, IntPtr.Zero,
+                    bounds.X, bounds.Y, bounds.Width, bounds.Height,
+                    NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    $"SetWindowPos 应用窗口 0x{hwnd:X} 几何 {bounds} 失败。");
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public Task<WindowMinMaxState> GetMinMaxStateAsync(IntPtr hwnd)
+    {
+        return Task.Run(() => ReadMinMaxState(hwnd));
+    }
+
+    /// <inheritdoc/>
+    public Task<IReadOnlyList<WindowBounds>> GetMonitorRectsAsync()
+    {
+        return Task.Run<IReadOnlyList<WindowBounds>>(() =>
+        {
+            var monitors = new List<WindowBounds>();
+
+            // 回调一律不抛（与 EnumWindows 的纪律相同）：托管异常穿过 user32 的
+            // 非托管枚举帧可能直接终止进程；失败置标志、回托管帧后再抛。
+            bool callback(IntPtr hMonitor, IntPtr hdcMonitor, ref NativeMethods.RECT rect, IntPtr dwData)
+            {
+                var info = new NativeMethods.MONITORINFO
+                {
+                    cbSize = Marshal.SizeOf<NativeMethods.MONITORINFO>(), // 不填 cbSize API 直接拒绝
+                };
+
+                if (NativeMethods.GetMonitorInfoW(hMonitor, ref info))
+                {
+                    monitors.Add(new WindowBounds(
+                        info.rcMonitor.Left, info.rcMonitor.Top,
+                        info.rcMonitor.Right - info.rcMonitor.Left,
+                        info.rcMonitor.Bottom - info.rcMonitor.Top));
+                }
+
+                // 单块显示器信息读失败不终止枚举：少一块只影响屏幕外判定的保守程度，
+                // 全枚举失败才在下方抛出。
+                return true;
+            }
+
+            if (!NativeMethods.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, callback, IntPtr.Zero))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "EnumDisplayMonitors 枚举显示器失败。");
+            }
+
+            return monitors;
+        });
+    }
+
+    /// <inheritdoc/>
+    public WindowBounds? TryGetWindowBoundsSync(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd))
+        {
+            return null;
+        }
+
+        if (!NativeMethods.GetWindowRect(hwnd, out NativeMethods.RECT rect))
+        {
+            return null;
+        }
+
+        return new WindowBounds(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+    }
+
+    /// <inheritdoc/>
+    public WindowMinMaxState GetMinMaxStateSync(IntPtr hwnd) => ReadMinMaxState(hwnd);
+
+    /// <summary>
+    /// GetWindowRect 的失败检查（Async 版共用）：失败抛 Win32Exception（与既有失败语义一致）。
+    /// </summary>
+    private static WindowBounds ReadWindowBoundsOrThrow(IntPtr hwnd)
+    {
+        if (!NativeMethods.GetWindowRect(hwnd, out NativeMethods.RECT rect))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), $"GetWindowRect 读取窗口 0x{hwnd:X} 矩形失败。");
+        }
+
+        return new WindowBounds(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+    }
+
+    /// <summary>IsIconic / IsZoomed 的统一读取（句柄无效两个标志均为 false，与 Win32 语义一致）。</summary>
+    private static WindowMinMaxState ReadMinMaxState(IntPtr hwnd) =>
+        new(NativeMethods.IsIconic(hwnd), NativeMethods.IsZoomed(hwnd));
+
     /// <inheritdoc/>
     public Task SetRoundedCornersAsync(IntPtr hwnd, bool enableSmallRadius = false)
     {

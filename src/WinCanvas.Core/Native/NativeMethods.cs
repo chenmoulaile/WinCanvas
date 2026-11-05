@@ -25,6 +25,9 @@ internal static partial class NativeMethods
     /// <summary>SWP_NOACTIVATE(0x0010)：不激活窗口（不抢焦点）。</summary>
     public const uint SWP_NOACTIVATE = 0x0010;
 
+    /// <summary>SWP_NOZORDER(0x0004)：不改变窗口的 Z 序（恢复几何时只动位置尺寸，不重排层级）。</summary>
+    public const uint SWP_NOZORDER = 0x0004;
+
     // ===== GetWindowLong / SetWindowLong 的 nIndex =====
     /// <summary>GWL_EXSTYLE(-20)：读取/设置窗口扩展样式。</summary>
     public const int GWL_EXSTYLE = -20;
@@ -513,4 +516,116 @@ internal static partial class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool PeekMessageW(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
+    // ===== 窗口几何（窗口位置记忆工作包新增） =====
+
+    /// <summary>
+    /// Win32 RECT 结构（winuser.h 的 tagRECT）。GetWindowRect / MONITORINFO 共用；
+    /// 布局为 4 个连续 LONG，Sequential 即为 Win32 原生布局。
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        /// <summary>左上角 X（物理像素）。</summary>
+        public int Left;
+
+        /// <summary>左上角 Y（物理像素）。</summary>
+        public int Top;
+
+        /// <summary>右下角 X（物理像素， exclusive —— 不含该列像素）。</summary>
+        public int Right;
+
+        /// <summary>右下角 Y（物理像素，exclusive）。</summary>
+        public int Bottom;
+    }
+
+    /// <summary>
+    /// Win32 MONITORINFO 结构（winuser.h 的 tagMONITORINFO）。
+    /// 由 GetMonitorInfoW 整体填充；cbSize 必须在调用前置为本结构字节数，
+    /// 否则 API 以「缓冲区版本过旧」拒绝并返回 false。
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MONITORINFO
+    {
+        /// <summary>结构字节数（调用前必须置为 Marshal.SizeOf(typeof(MONITORINFO))，见上）。</summary>
+        public int cbSize;
+
+        /// <summary>显示器的完整矩形（物理像素，虚拟桌面坐标）。</summary>
+        public RECT rcMonitor;
+
+        /// <summary>工作区矩形（扣除任务栏等应用栏后的可见区域）。</summary>
+        public RECT rcWork;
+
+        /// <summary>标志位（MONITORINFOF_PRIMARY=1 表示主显示器；本程序不使用）。</summary>
+        public uint dwFlags;
+    }
+
+    /// <summary>
+    /// EnumDisplayMonitors 的回调委托：每枚举到一个显示器调用一次。
+    /// </summary>
+    /// <param name="hMonitor">当前枚举到的显示器句柄（喂给 GetMonitorInfoW 拿矩形）。</param>
+    /// <param name="hdcMonitor">该显示器的 DC（本程序不需要，忽略）。</param>
+    /// <param name="lprcMonitor">该显示器的矩形指针（本程序改经 GetMonitorInfoW 取，忽略）。</param>
+    /// <param name="dwData">调用方传入的自定义参数（原样回传）。</param>
+    /// <returns>true = 继续枚举，false = 停止枚举。</returns>
+    public delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdcMonitor, ref RECT lprcMonitor, IntPtr dwData);
+
+    /// <summary>
+    /// 枚举当前会话的全部显示设备（物理显示器）。用于「档案矩形是否落在任何显示器上」
+    /// 的屏幕外判定（窗口位置记忆：改分辨率 / 拔掉显示器后不把窗口恢复到屏幕外）。
+    /// </summary>
+    /// <param name="hdc">供枚举的 DC；IntPtr.Zero = 枚举全部显示器（本程序的用法）。</param>
+    /// <param name="lprcClip">裁剪矩形指针；IntPtr.Zero = 不裁剪（全部显示器都要）。</param>
+    /// <param name="lpfnEnum">回调委托（回调期间必须保持委托被引用，防止被 GC 回收）。</param>
+    /// <param name="dwData">传给回调的自定义参数，本程序传 IntPtr.Zero。</param>
+    /// <returns>true = 枚举完整跑完；false = 被回调提前终止或调用失败（用 GetLastError 取错误码）。</returns>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumDisplayMonitors(
+        IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfnEnum, IntPtr dwData);
+
+    /// <summary>
+    /// 读取指定显示器的信息（矩形与工作区）。与 EnumDisplayMonitors 配合构成
+    /// 「当前全部显示器可见区域」列表，供屏幕外判定纯函数使用。
+    /// </summary>
+    /// <param name="hMonitor">EnumDisplayMonitors 回调给出的显示器句柄。</param>
+    /// <param name="lpmi">接收信息的 MONITORINFO（调用方必须已填好 cbSize，见结构注释）。</param>
+    /// <returns>true = 成功；【失败语义】false = 句柄无效或 cbSize 未正确设置（用 GetLastError 取错误码）。</returns>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    /// <summary>
+    /// 读取窗口的外接矩形（客户区之外的整窗，含标题栏边框，物理像素、虚拟桌面坐标）。
+    /// 窗口位置记忆用它捕获「记住当前位置」时刻的几何，与 SetWindowPos 成对使用
+    /// （两者同一坐标系、同一口径，存什么就恢复什么，无需 DPI 换算）。
+    /// </summary>
+    /// <param name="hWnd">目标窗口句柄。</param>
+    /// <param name="lpRect">输出：接收外接矩形。</param>
+    /// <returns>true = 成功；【失败语义】false = 句柄无效（用 GetLastError 取错误码）。
+    /// 特殊值：窗口最小化时返回的是「挂起位置」(-32000,-32000)，本程序在捕获与恢复两侧
+    /// 都先用 IsIconic / IsZoomed 预检拦掉该状态，不把垃圾矩形写入档案。</returns>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    /// <summary>
+    /// 判断窗口是否处于最小化（iconic）状态。恢复几何前预检：最小化窗口的
+    /// GetWindowRect 返回 (-32000,-32000) 挂起坐标，直接应用会把窗口丢出屏幕。
+    /// </summary>
+    /// <param name="hWnd">目标窗口句柄。</param>
+    /// <returns>true = 已最小化；false = 未最小化或句柄无效（两种情况不区分，调用方另行 IsWindow 预检）。</returns>
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsIconic(IntPtr hWnd);
+
+    /// <summary>
+    /// 判断窗口是否处于最大化（zoomed）状态。恢复几何前预检：对最大化窗口应用
+    /// 普通矩形既破坏最大化状态、尺寸语义也是错的，应整体跳过。
+    /// </summary>
+    /// <param name="hWnd">目标窗口句柄。</param>
+    /// <returns>true = 已最大化；false = 未最大化或句柄无效。</returns>
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsZoomed(IntPtr hWnd);
 }
