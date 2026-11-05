@@ -47,6 +47,15 @@
                                Style="{ThemeResource CaptionTextBlockStyle}"
                                Opacity="0.7" TextWrapping="Wrap" />
 
+                    <!-- 开机自启动（开机自启动工作包）：HKCU Run 键，注册表是单一真源。
+                         标准权限可开关；卸载程序会兜底清理该条目。 -->
+                    <ToggleSwitch Header="开机自启动"
+                                  IsOn="{x:Bind ViewModel.AutoStartEnabled, Mode=TwoWay}"
+                                  AutomationProperties.Name="登录 Windows 时自动运行 WinCanvas" />
+                    <TextBlock Text="开启后写入注册表 HKCU\Software\Microsoft\Windows\CurrentVersion\Run（值名 WinCanvas，带引号的 exe 全路径，标准权限即可）；关闭即删除该条目。开关状态每次启动都从注册表现读——在注册表里手工删除后这里如实显示为关。"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.7" TextWrapping="Wrap" />
+
                     <!-- 隐私遮罩（隐私窗口工作包）：主窗口失焦时自动遮蔽内容，点回窗口立即恢复 -->
                     <ToggleSwitch Header="主窗口失焦显示隐私遮罩"
                                   IsOn="{x:Bind ViewModel.PrivacyOverlayEnabled, Mode=TwoWay}"

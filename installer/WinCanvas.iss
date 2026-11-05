@@ -126,6 +126,12 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+    // 开机自启动兜底清理（开机自启动工作包）：应用内开关正常关闭时该值已不存在，
+    // 这里覆盖「卸载时开关还开着 / 用户手工改过注册表」的情形，避免留下指向已删除
+    // 程序目录的死条目（登录时 explorer 启动失败）。只删值名 WinCanvas 一个值，
+    // 同键下其它程序的自启动条目不受影响；DeleteValue 对不存在的值安静返回。
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'WinCanvas');
+
     CachePath := ExpandConstant('{localappdata}\WinCanvas\wallpaper-cache');
     if DirExists(CachePath) then
     begin

@@ -34,6 +34,10 @@ public sealed class AppServices
     /// 「WinTips 提示」开关同时控制它的 <see cref="KeyboardIndicatorService.Start"/> / Stop（钩子启停）。</summary>
     public KeyboardIndicatorService KeyboardIndicator { get; }
 
+    /// <summary>开机自启动服务（Core 实现，HKCU Run 键）：读 / 开 / 关登录自启动条目，
+    /// 注册表是开关状态的单一真源（不写 config.json）。</summary>
+    public StartupRegistryService Startup { get; }
+
     public AppServices()
     {
         Configuration = new ConfigurationService();
@@ -44,5 +48,6 @@ public sealed class AppServices
         // NumLock 钩子注入 WinTips 集成服务作上报目标（WP2）：
         // 钩子只负责「状态变化」事件源，是否对外呈现仍由 WinTips.IsEnabled 兜底把关
         KeyboardIndicator = new KeyboardIndicatorService(WinTips);
+        Startup = new StartupRegistryService();
     }
 }

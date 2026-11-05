@@ -363,6 +363,58 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>「恢复窗口位置与尺寸」开关的初始化回填抑制标志（与 _suppressAutoRestoreSync 同一模式）。</summary>
     private bool _suppressBoundsRestoreSync;
 
+    /// <summary>「开机自启动」开关的初始化回填抑制标志（回填时不触发注册表读写）。</summary>
+    private bool _suppressAutoStartSync;
+
+    /// <summary>
+    /// 设置区开关「开机自启动」（开机自启动工作包）：镜像 HKCU Run 键的注册表状态。
+    /// 注册表是单一真源：启动时现读注册表回填（<see cref="InitializeAsync"/>），
+    /// 不写 config.json——注册表外的手工删除会如实显示为关。
+    /// </summary>
+    [ObservableProperty]
+    public partial bool AutoStartEnabled { get; set; }
+
+    partial void OnAutoStartEnabledChanged(bool value)
+    {
+        if (_suppressAutoStartSync)
+        {
+            return; // 初始化回填：值本就来自注册表现读，不回写注册表
+        }
+
+        try
+        {
+            if (value)
+            {
+                // Environment.ProcessPath = 当前 exe 的全路径（含引号处理见 BuildRunCommand）。
+                // 用当前路径覆盖旧条目：exe 移动 / 重装后重开一次开关即完成迁移。
+                string exePath = Environment.ProcessPath
+                    ?? throw new InvalidOperationException("无法确定当前 exe 的全路径（Environment.ProcessPath 为空）。");
+                _services.Startup.Enable(exePath);
+                ShowInfo(InfoBarSeverity.Informational,
+                    $"开机自启动已开启：登录时将自动运行 {exePath}。该设置保存在注册表 HKCU\\{StartupRegistryService.RunKeyPath}，再次关闭即可撤销。");
+            }
+            else
+            {
+                _services.Startup.Disable();
+                ShowInfo(InfoBarSeverity.Informational,
+                    "开机自启动已关闭：登录时不再自动运行本程序（注册表条目已删除，其余程序的自启动条目不受影响）。");
+            }
+        }
+        catch (Exception ex)
+        {
+            // 失败 + 原因 + 怎么办：注册表写入被策略 / 权限拦截时给出可操作的引导
+            ShowInfo(InfoBarSeverity.Error,
+                (value ? "开启开机自启动失败" : "关闭开机自启动失败") +
+                $"：{ex.Message}。可能原因：系统策略或安全软件限制了对 HKCU Run 键的写入。" +
+                "请稍后重试；仍失败可手工编辑注册表或联系管理员。界面开关将回退显示真实状态。");
+
+            // 失败回滚：开关显示退回原值（真实状态以注册表为准），抑制回滚写避免再触发一次应用
+            _suppressAutoStartSync = true;
+            AutoStartEnabled = !value;
+            _suppressAutoStartSync = false;
+        }
+    }
+
     [ObservableProperty]
     public partial bool WinTipsEnabled { get; set; }
 
@@ -421,6 +473,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _suppressBoundsRestoreSync = true;
         RestoreWindowBoundsOnStartup = _appConfig.RestoreWindowBoundsOnStartup;
         _suppressBoundsRestoreSync = false;
+
+        // 「开机自启动」回填：从注册表现读（注册表是单一真源，config.json 不存这个状态）。
+        // 读失败（键策略受限等）按「关」显示，不让启动初始化失败。
+        _suppressAutoStartSync = true;
+        try
+        {
+            AutoStartEnabled = _services.Startup.IsEnabled();
+        }
+        catch (Exception ex)
+        {
+            AutoStartEnabled = false;
+            RestoreDiagnostics.Log($"开机自启动状态读取失败，按「关」显示：{ex.Message}");
+        }
+        _suppressAutoStartSync = false;
 
         // 隐私窗口（隐私窗口工作包）：回填主窗口遮罩总开关并接好前台监听事件
         InitializePrivacyFromConfig();
