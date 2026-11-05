@@ -69,6 +69,13 @@ public enum HotkeyAction
 
     /// <summary>循环当前焦点窗口的圆角档位（无 → 大 → 小 → 无）。</summary>
     FocusCycleCorner = 16,
+
+    /// <summary>
+    /// 切换当前焦点窗口的「窗口隐私模式」（隐私窗口工作包新增）。
+    /// 开启后该窗口失焦自动遮蔽内容、聚焦自动恢复；只能追加在枚举末尾
+    /// （枚举值是 config.json 里的持久化标识，插入或重排会让旧配置错位）。
+    /// </summary>
+    FocusTogglePrivacy = 17,
 }
 
 /// <summary>

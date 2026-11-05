@@ -67,4 +67,12 @@ public sealed class AppConfig
     /// 所以用户删掉某条只是回到默认，要真正停用请把该条的 <see cref="HotkeyBinding.Enabled"/> 置 false。
     /// </summary>
     public List<HotkeyBinding> Hotkeys { get; set; } = new();
+
+    /// <summary>
+    /// 主窗口失焦时是否显示隐私遮罩（仿 QQ 新版「隐私窗口」，隐私窗口工作包新增）。
+    /// 默认 true：遮蔽是防肩窥的安全特性，默认开启才符合「用户没配置过 = 想要保护」的直觉；
+    /// 被遮罩只出现在本窗口失去前台时，点击窗口即恢复，不构成打扰。
+    /// 单窗口粒度的隐私开关在 <see cref="WindowState.PrivacyEnabled"/>，两者互不影响。
+    /// </summary>
+    public bool PrivacyOverlayOnDeactivated { get; set; } = true;
 }

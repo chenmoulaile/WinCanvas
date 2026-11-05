@@ -99,6 +99,16 @@ internal static class TestWindowHarness
     /// <summary>SW_SHOWNORMAL：正常显示并激活（5）。</summary>
     private const int SW_SHOWNORMAL = 5;
 
+    /// <summary>SW_MINIMIZE(6)：最小化窗口——前台必然移交给其它窗口（真实前台切换原语之一）。</summary>
+    public const int SW_MINIMIZE = 6;
+
+    /// <summary>SW_RESTORE(9)：还原窗口——还原会【激活】窗口（窗口管理动作，不受前台锁定限制），
+    /// 是后台进程触发真实前台切换的可靠原语（隐私前台监听测试用）。</summary>
+    public const int SW_RESTORE = 9;
+
+    /// <summary>LWA_ALPHA(0x2)：与 Core NativeMethods 同值——alpha 回读有效标志。</summary>
+    public const uint LWA_ALPHA = 0x2;
+
     /// <summary>最近一次 <see cref="Create"/> 的失败原因（成功为 null；诊断用）。</summary>
     public static string? LastCreateError { get; private set; }
 
@@ -223,6 +233,28 @@ internal static class TestWindowHarness
     /// <summary>读窗口扩展样式（整数值即可覆盖两个 32 位内的样式位）。</summary>
     public static int GetExStyle(IntPtr hwnd) => GetWindowLongW(hwnd, GWL_EXSTYLE);
 
+    /// <summary>
+    /// 显示窗口包装（nCmdShow 取 <see cref="SW_MINIMIZE"/> / <see cref="SW_RESTORE"/> 等）。
+    /// 最小化→还原的往复会让系统真实地移交/授予前台，是后台进程触发 EVENT_SYSTEM_FOREGROUND
+    /// 的可靠手段（SetForegroundWindow 受前台锁定限制，还原不受）。
+    /// </summary>
+    public static bool ShowWindowCmd(IntPtr hWnd, int nCmdShow) => ShowWindow(hWnd, nCmdShow);
+
+    /// <summary>
+    /// 读回分层窗口的当前整体 alpha（隐私遮蔽验证：写入 30 后回读必须一致）。
+    /// </summary>
+    /// <param name="hwnd">目标窗口句柄（须已带 WS_EX_LAYERED，失败返回 false）。</param>
+    /// <param name="alpha">回读的 alpha（0 全透明 ~ 255 不透明；仅在返回 true 且 flags 含 LWA_ALPHA 时有效）。</param>
+    /// <param name="flags">有效字段标志：含 <see cref="LWA_ALPHA"/>(0x2) 时 alpha 有效。</param>
+    /// <returns>true = 成功读回；【失败语义】false = 窗口未分层或尚未设置过分层属性
+    /// （SetLayeredWindowAttributes 之前 GetLayeredWindowAttributes 返回 FALSE）。</returns>
+    public static bool TryGetLayeredAlpha(IntPtr hwnd, out byte alpha, out uint flags)
+    {
+        alpha = 0;
+        flags = 0;
+        return GetLayeredWindowAttributes(hwnd, out _, out alpha, out flags);
+    }
+
     // ---- 以下 P/Invoke 仅供测试程序集：作用 / 返回值 / 失败语义如各注释 ----
     // 注意：托管方法名与导出名不同处必须显式 EntryPoint，否则运行期
     // EntryPointNotFoundException 从 Dispose / 线程体逃逸会击穿测试宿主进程（本 WP 实测踩坑）。
@@ -295,6 +327,18 @@ internal static class TestWindowHarness
     /// <summary>读窗口属性（32 位返回足够覆盖 GWL_EXSTYLE）。</summary>
     [DllImport("user32.dll", SetLastError = true, EntryPoint = "GetWindowLongW")]
     private static extern int GetWindowLongW(IntPtr hWnd, int nIndex);
+
+    /// <summary>
+    /// 读回分层窗口的颜色键 / 整体 alpha / 有效字段标志（隐私遮蔽 alpha 回读用）。
+    /// </summary>
+    /// <param name="hwnd">目标窗口句柄。</param>
+    /// <param name="pcrKey">输出：颜色键（本验证不用，忽略）。</param>
+    /// <param name="pbAlpha">输出：当前整体 alpha。</param>
+    /// <param name="pdwFlags">输出：有效字段标志（LWA_ALPHA=0x2 时 pbAlpha 有效）。</param>
+    /// <returns>true = 成功；【失败语义】false = 窗口未带 WS_EX_LAYERED，或尚未调用过
+    /// SetLayeredWindowAttributes（两个出参无意义）。</returns>
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "GetLayeredWindowAttributes")]
+    private static extern bool GetLayeredWindowAttributes(IntPtr hwnd, out uint pcrKey, out byte pbAlpha, out uint pdwFlags);
 
     /// <summary>默认窗口过程（测试窗口不处理消息，直接交系统默认）。</summary>
     [DllImport("user32.dll", EntryPoint = "DefWindowProcW")]

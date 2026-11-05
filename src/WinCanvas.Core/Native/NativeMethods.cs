@@ -43,6 +43,69 @@ internal static partial class NativeMethods
     /// <summary>LWA_ALPHA(0x2)：使用 bAlpha 参数做整体透明度。</summary>
     public const uint LWA_ALPHA = 0x2;
 
+    // ===== WinEvent 钩子（前台窗口监听，隐私遮蔽专用） =====
+    /// <summary>
+    /// EVENT_SYSTEM_FOREGROUND(0x0003)：前台窗口已切换。
+    /// 数值含义：0x0003 是 winuser.h 定义的系统事件 Id，任何窗口取得前台
+    /// （拥有键盘焦点的顶层窗口发生变化）时系统对全局广播一次该事件；
+    /// <see cref="WineventProc"/> 的 hwnd 参数即【新的前台窗口】句柄。
+    /// 失败语义：事件 Id 非法时 SetWinEventHook 返回 NULL，本常量恒为合法值。
+    /// </summary>
+    public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+
+    /// <summary>
+    /// WINEVENT_OUTOFCONTEXT(0x0)：WinEvent 钩子回调以「脱离上下文」方式投递。
+    /// 数值含义：位标志 0x0 表示回调不在事件源进程内执行，而是投递到【安装钩子的线程】
+    /// 的消息队列（该线程必须持续泵消息，否则回调永远不触发且不阻塞事件源）。
+    /// 失败语义：与其它标志位组合不当时 SetWinEventHook 返回 NULL。
+    /// </summary>
+    public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+
+    /// <summary>OBJID_WINDOW(0)：WinEvent / 可访问性对象 Id——事件属于窗口本体而非其子控件。</summary>
+    public const int OBJID_WINDOW = 0;
+
+    /// <summary>
+    /// WinEvent 钩子回调委托，对应 Win32 的 WINEVENTPROC。
+    /// 必须作为字段长期持有（防 GC 回收后原生回调悬空，与低级键盘钩子的约定相同）。
+    /// </summary>
+    /// <param name="hWinEventHook">本回调所属的钩子句柄（同一委托可挂多个钩子，用它可以区分来源）。</param>
+    /// <param name="event">事件 Id（如 EVENT_SYSTEM_FOREGROUND=0x0003）。</param>
+    /// <param name="hWnd">事件关联的窗口句柄（前台切换事件 = 新前台窗口；窗口已销毁时为 0）。</param>
+    /// <param name="idObject">对象 Id：OBJID_WINDOW(0) = 窗口本体；其余为子控件 / 可访问性对象。</param>
+    /// <param name="idChild">子对象 Id（窗口本体事件为 0）。</param>
+    /// <param name="dwEventThread">产生事件的线程 Id。</param>
+    /// <param name="dwmsEventTime">事件时间戳（GetTickCount 毫秒口径）。</param>
+    public delegate void WineventProc(
+        IntPtr hWinEventHook, uint @event, IntPtr hWnd, int idObject, int idChild,
+        uint dwEventThread, uint dwmsEventTime);
+
+    /// <summary>
+    /// 安装 WinEvent 事件钩子，系统随后把范围内的事件投递到调用线程的消息队列。
+    /// </summary>
+    /// <param name="eventMin">要监听的事件 Id 下限（含）。</param>
+    /// <param name="eventMax">要监听的事件 Id 上限（含）；与下限相同即只监听单个事件。</param>
+    /// <param name="hmodWinEventProc">回调所在模块句柄；回调在本进程程序集内传 GetModuleHandleW(null)，传 NULL 亦可。</param>
+    /// <param name="pfnWinEventProc">回调委托（调用方必须长期持有引用防 GC 回收）。</param>
+    /// <param name="idProcess">事件源进程过滤：0 = 全系统进程（监听其它进程的窗口必须传 0）。</param>
+    /// <param name="idThread">事件源线程过滤：0 = 该进程全部线程。</param>
+    /// <param name="dwFlags">WINEVENT_* 位标志组合（本程序传 WINEVENT_OUTOFCONTEXT=0x0）。</param>
+    /// <returns>钩子句柄；【失败语义】返回 IntPtr.Zero（用 GetLastError 取错误码）。
+    /// 常见失败：回调为 null、flags 非法；安装线程随后必须泵消息，否则回调不会触发。</returns>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWinEventHook(
+        uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
+        WineventProc pfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+    /// <summary>
+    /// 卸载 SetWinEventHook 安装的钩子。必须在钩子线程收尾时调用（与 KeyboardIndicatorService
+    /// 的 LL 键盘钩子同一时序约定：Unhook 一定发生在最后一次回调之后）。
+    /// </summary>
+    /// <param name="hWinEventHook">SetWinEventHook 返回的钩子句柄。</param>
+    /// <returns>true = 成功；【失败语义】false = 句柄无效或已被卸载（幂等场景可安全忽略）。</returns>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
     // ===== DwmSetWindowAttribute 的属性 Id 与圆角取值 =====
     /// <summary>DWMWA_WINDOW_CORNER_PREFERENCE(33)：Win11 的窗口圆角偏好属性。</summary>
     public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;

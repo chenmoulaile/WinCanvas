@@ -328,7 +328,8 @@ public sealed class HotkeyTableTests
         // 重叠的那条必有一个注册失败（同一组合只能被注册一次）
         var defaults = HotkeyTable.Normalize(null);
 
-        Assert.Equal(17, defaults.Count);
+        // 目录条目数 = 动作枚举数；隐私窗口工作包追加了 FocusTogglePrivacy → 18 条
+        Assert.Equal(18, defaults.Count);
         Assert.Equal(defaults.Count, defaults.Select(b => (b.Modifiers, b.VirtualKey)).Distinct().Count());
     }
 }

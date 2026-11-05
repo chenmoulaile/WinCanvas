@@ -43,4 +43,11 @@ public sealed class WindowState
 
     /// <summary>背景资源的路径（图片/视频文件路径或 pkg 包路径），无背景时为 null。</summary>
     public string? BackgroundPath { get; set; }
+
+    /// <summary>
+    /// 是否开启「窗口隐私模式」（隐私窗口工作包新增）：开启后本窗口失去前台时
+    /// 自动把 alpha 降到遮蔽值、重新聚焦时恢复到 <see cref="Alpha"/>（档案值，非硬编码 255）。
+    /// 默认 false：遮蔽会改变窗口外观，属于用户逐窗口显式授权的行为了解成本，不可默认替用户开启。
+    /// </summary>
+    public bool PrivacyEnabled { get; set; }
 }

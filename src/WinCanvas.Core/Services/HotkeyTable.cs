@@ -43,6 +43,9 @@ public static class HotkeyTable
         (HotkeyAction.FocusDecreaseOpacity, "降低透明度（焦点窗口）", "焦点窗口不透明度 -10（下限 0）"),
         (HotkeyAction.FocusRestoreOpaque, "恢复不透明（焦点窗口）", "焦点窗口恢复完全不透明（alpha = 255）"),
         (HotkeyAction.FocusCycleCorner, "圆角循环（焦点窗口）", "焦点窗口：无 → 大圆角 → 小圆角 → 无"),
+        // 隐私模式（隐私窗口工作包）：开启后该窗口失焦自动遮蔽内容、聚焦自动恢复。
+        // 作用于焦点窗口——用户正看着的窗口就是想保护的窗口，语义与其它焦点热键一致。
+        (HotkeyAction.FocusTogglePrivacy, "隐私模式切换（焦点窗口）", "焦点窗口失焦自动遮蔽内容、聚焦自动恢复"),
     };
 
     /// <summary>
@@ -74,6 +77,7 @@ public static class HotkeyTable
         [HotkeyAction.FocusDecreaseOpacity] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x28),         // ↓
         [HotkeyAction.FocusRestoreOpaque] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x4F),           // O（Opaque）
         [HotkeyAction.FocusCycleCorner] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x55),             // U（Corner 循环）
+        [HotkeyAction.FocusTogglePrivacy] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x48),           // H（Hide/隐私）
     };
 
     /// <summary>

@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using WinCanvas.App.Native;
 using WinCanvas.Core.Interfaces;
 using WinCanvas.Core.Models;
 using WinCanvas.Core.Services;
@@ -15,6 +16,27 @@ public partial class WindowItemViewModel : ObservableObject
     private readonly IWindowControlService _windowControl;
     private readonly Action<WindowState> _persist;
     private readonly Action<string> _reportError;
+
+    /// <summary>
+    /// 隐私迁移投递回调（由 MainViewModel 注入）：把「遮蔽 / 恢复」迁移指令送进
+    /// ViewModel 的串行任务链。所有隐私相关的 alpha 写入都经同一条链串行执行，
+    /// 保证同一窗口上「遮蔽 → 恢复」严格按事件顺序落盘，不会互相覆盖（并发纪律见 ADR）。
+    /// </summary>
+    private readonly Action<IReadOnlyList<PrivacyMaskRules.PrivacyMaskTransition>> _enqueuePrivacyTransitions;
+
+    /// <summary>隐私开关变化回调（由 MainViewModel 注入）：据此启停前台监听钩子线程。</summary>
+    private readonly Action _notifyPrivacyChanged;
+
+    /// <summary>
+    /// 构造回填抑制标志：构造函数里从档案回填 <see cref="IsPrivacyEnabled"/> 会触发
+    /// <see cref="OnIsPrivacyEnabledChanged"/>，若不加抑制，每次刷新都会对隐私窗口
+    /// 立刻发起一次 Win32 遮蔽（与档案恢复管线竞态）。初始遮蔽统一由
+    /// MainViewModel.ApplyPrivacyInitialState 在列表重建后按决策规则执行。
+    /// </summary>
+    private bool _privacyInitialized;
+
+    /// <summary>回滚抑制标志：失败回滚 <see cref="IsPrivacyEnabled"/> 时不再触发一次新的应用。</summary>
+    private bool _suppressPrivacyApply;
 
     /// <summary>已实际应用到 Win32 窗口的值（用于避免重复调用服务）。</summary>
     private bool _appliedTopmost;
@@ -78,18 +100,62 @@ public partial class WindowItemViewModel : ObservableObject
     [ObservableProperty]
     public partial CornerPreference Corner { get; set; } = CornerPreference.Default;
 
+    /// <summary>
+    /// 「窗口隐私模式」开关（持久化进 <see cref="WindowState.PrivacyEnabled"/>）。
+    /// 变更后经 <see cref="ApplyPrivacyAsync"/> 单一路径应用：失焦遮蔽 / 聚焦恢复的
+    /// Win32 调用全部走 ViewModel 的串行迁移链（见 <see cref="_enqueuePrivacyTransitions"/>）。
+    /// </summary>
+    [ObservableProperty]
+    public partial bool IsPrivacyEnabled { get; set; }
+
+    /// <summary>
+    /// 该窗口当前是否处于隐私遮蔽态（纯运行期状态，不持久化）。
+    /// 列表项右侧据此显示眼睛图标，让用户看得出「哪些窗口正处于被遮蔽」。
+    /// 只在 UI 线程写（迁移链与开关应用路径均在 UI 线程执行）。
+    /// </summary>
+    [ObservableProperty]
+    public partial bool IsPrivacyMasked { get; set; }
+
+    /// <summary>隐私开关变化：走单一路径应用（构造回填与失败回滚走抑制分支）。</summary>
+    partial void OnIsPrivacyEnabledChanged(bool value)
+    {
+        if (!_privacyInitialized || _suppressPrivacyApply)
+        {
+            return;
+        }
+
+        _ = ApplyPrivacyAsync(value);
+    }
+
+    /// <summary>遮蔽态变化 → 刷新列表项眼睛图标的可见性。</summary>
+    partial void OnIsPrivacyMaskedChanged(bool value)
+    {
+        OnPropertyChanged(nameof(PrivacyMaskedVisibility));
+    }
+
+    /// <summary>列表项隐私开关的无障碍名称（含窗口名，屏幕阅读器能说清开关管的是谁）。</summary>
+    public string PrivacyToggleAutomationName => $"窗口隐私模式：{DisplayName}";
+
+    /// <summary>遮蔽态眼睛图标的可见性（列表项模板绑定）。</summary>
+    public Microsoft.UI.Xaml.Visibility PrivacyMaskedVisibility =>
+        IsPrivacyMasked ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
+
     public WindowItemViewModel(
         WindowInfo info,
         WindowState state,
         IWindowControlService windowControl,
         Action<WindowState> persist,
-        Action<string> reportError)
+        Action<string> reportError,
+        Action<IReadOnlyList<PrivacyMaskRules.PrivacyMaskTransition>> enqueuePrivacyTransitions,
+        Action notifyPrivacyChanged)
     {
         Info = info;
         State = state;
         _windowControl = windowControl;
         _persist = persist;
         _reportError = reportError;
+        _enqueuePrivacyTransitions = enqueuePrivacyTransitions;
+        _notifyPrivacyChanged = notifyPrivacyChanged;
 
         DisplayName = string.IsNullOrWhiteSpace(info.Title) ? "（无标题窗口）" : info.Title;
         Subtitle = $"{info.ProcessName} ({info.ProcessId}) · {info.ClassName}";
@@ -100,6 +166,10 @@ public partial class WindowItemViewModel : ObservableObject
         Alpha = state.Alpha;
         ClickThrough = state.ClickThrough;
         Corner = state.Corner;
+
+        // 隐私开关回填必须走在 _privacyInitialized 置位之前，否则每次刷新都会立刻遮蔽一次
+        IsPrivacyEnabled = state.PrivacyEnabled;
+        _privacyInitialized = true;
     }
 
     /// <summary>
@@ -153,6 +223,15 @@ public partial class WindowItemViewModel : ObservableObject
             ClickThrough = State.ClickThrough;
             Corner = State.Corner;
             Alpha = State.Alpha;
+
+            // 隐私遮蔽协同（隐私窗口工作包）：若该窗口当前处于遮蔽态，档案恢复会把
+            // alpha 抬回档案值（用户能看见内容）——必须立刻重新套遮蔽，
+            // 否则「在列表里选中一下」就把被保护的内容曝光了。
+            // 目标 alpha 重新取档案值计算（可能刚被用户改动过）。
+            if (IsPrivacyMasked)
+            {
+                await _windowControl.SetTransparencyAsync(Hwnd, PrivacyMaskRules.ComputeMaskAlpha(State.Alpha));
+            }
         }
         catch (Exception ex)
         {
@@ -184,6 +263,59 @@ public partial class WindowItemViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// 应用「窗口隐私模式」开关（单一路径：界面 ToggleSwitch / 热键 / 回滚都汇到这里）。
+    /// 写档案 → 计算即时迁移 → 投入 ViewModel 串行链执行（Win32 调用 + 遮蔽态更新）。
+    /// 已在前台的窗口开启隐私时【不】立即遮蔽——用户正在用的窗口不该被压暗，
+    /// 失焦时由前台监听自动遮蔽（见 PrivacyMaskRules.DecideTransitions 的语义）。
+    /// </summary>
+    private async Task ApplyPrivacyAsync(bool enable)
+    {
+        try
+        {
+            State.PrivacyEnabled = enable;
+            _persist(State);
+
+            var transitions = new List<PrivacyMaskRules.PrivacyMaskTransition>(1);
+
+            if (enable)
+            {
+                bool isForeground = ShellNativeMethods.GetForegroundWindow() == Hwnd;
+                if (!isForeground)
+                {
+                    transitions.Add(new PrivacyMaskRules.PrivacyMaskTransition(
+                        Hwnd, PrivacyMaskRules.ComputeMaskAlpha(State.Alpha), Masked: true));
+                }
+            }
+            else if (IsPrivacyMasked)
+            {
+                // 关闭开关且正处于遮蔽态：立即按档案值恢复（档案值 = 用户手动设置的透明度，
+                // 不是硬编码 255——这是与既有透明度功能协同的硬规则，见 ADR 决策五）
+                transitions.Add(new PrivacyMaskRules.PrivacyMaskTransition(Hwnd, State.Alpha, Masked: false));
+            }
+
+            if (transitions.Count > 0)
+            {
+                _enqueuePrivacyTransitions(transitions);
+            }
+
+            _notifyPrivacyChanged();
+        }
+        catch (Exception ex)
+        {
+            _reportError(ProcessElevation.DescribeFailure(ex,
+                enable ? $"开启窗口「{DisplayName}」的隐私模式" : $"关闭窗口「{DisplayName}」的隐私模式"));
+
+            // 失败回滚：档案与开关显示退回原值，保证「档案 = 界面 = 实际效果」三者一致；
+            // _suppressPrivacyApply 防止回滚写再触发一次新的应用。
+            State.PrivacyEnabled = !enable;
+            _persist(State);
+            _suppressPrivacyApply = true;
+            IsPrivacyEnabled = !enable;
+            _suppressPrivacyApply = false;
+        }
+    }
+
     /// <summary>设置透明度（0 全透明 ~ 255 不透明）并实时保存。</summary>
     public async Task SetAlphaAsync(byte alpha)
     {
@@ -194,6 +326,18 @@ public partial class WindowItemViewModel : ObservableObject
 
         try
         {
+            if (IsPrivacyMasked)
+            {
+                // 隐私遮蔽协同（隐私窗口工作包）：遮蔽态下拖滑块【不能】把真实窗口改亮——
+                // 否则用户一次拖动就把「失焦遮蔽」抬亮、隐私失效。只更新档案值与界面显示，
+                // 新值在该窗口重新聚焦（恢复路径按档案值应用）时生效。
+                _appliedAlpha = alpha;
+                Alpha = alpha;
+                State.Alpha = alpha;
+                _persist(State);
+                return;
+            }
+
             await _windowControl.SetTransparencyAsync(Hwnd, alpha);
             _appliedAlpha = alpha;
             Alpha = alpha;

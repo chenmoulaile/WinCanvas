@@ -377,6 +377,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         AutoRestoreOnStartup = _appConfig.AutoRestoreOnStartup;
         _suppressAutoRestoreSync = false;
 
+        // 隐私窗口（隐私窗口工作包）：回填主窗口遮罩总开关并接好前台监听事件
+        InitializePrivacyFromConfig();
+
         // 回填「WinTips 提示」开关（v0.2.0 才真正有持久化）。
         // 抑制标志必须打开：setter 会装/卸低级键盘钩子并弹 InfoBar，
         // 启动阶段这是「恢复用户上次的选择」，不是「用户刚刚改了这个开关」。
@@ -436,7 +439,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 var item = new WindowItemViewModel(
                     info, state, _services.WindowControl,
                     PersistState,
-                    message => ShowInfo(InfoBarSeverity.Error, message));
+                    message => ShowInfo(InfoBarSeverity.Error, message),
+                    EnqueuePrivacyTransitions,
+                    OnItemPrivacyChanged);
                 Windows.Add(item);
 
                 // 刷新后尽量按句柄 / 组合键恢复之前的选中项
@@ -459,6 +464,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // —— 档案恢复管线（WP3）：对配置中已有档案的窗口后台逐个恢复（置顶/透明/穿透/圆角/背景）。
             //    与列表构建解耦：本方法只入队即返回，恢复全程后台进行。
             QueueRestorePipeline(Windows);
+
+            // —— 隐私初始同步（隐私窗口工作包）：按隐私开关启停前台监听，
+            //    并把「开启隐私且未遮蔽」的窗口一次性遮蔽（初始态下它们不在前台）。
+            ApplyPrivacyInitialState();
         }
         catch (Exception ex)
         {
@@ -666,6 +675,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 try
                 {
                     await item.RestoreAsync();
+                    // 隐私协同（隐私窗口工作包）：恢复可能晚于初始遮蔽链把 alpha 抬回档案值，
+                    // 恢复完成后按当前状态补一次遮蔽决策（串行链收口竞态，见 QueuePrivacyRemaskAfterRestore）
+                    QueuePrivacyRemaskAfterRestore(item);
                     completion.TrySetResult();
                 }
                 catch (Exception ex)
@@ -988,6 +1000,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // 壁纸库扫描若还在跑：作废它（扫描体只读快照，取消即安全丢弃；
         // CTS 的生命周期说明见 WallpaperLibrary partial——刻意不 Dispose，只 Cancel）。
         _libraryScanCts?.Cancel();
+        DisposePrivacy(); // 停前台监听（隐私窗口工作包）：进程退出前显式卸全局 WinEvent 钩子
         DisposeShell();
         _fpsMonitor.Dispose();
     }

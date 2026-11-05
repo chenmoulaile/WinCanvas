@@ -61,7 +61,7 @@ jobs:
           --results-directory TestResults
 
       - name: 诊断工具编译检查
-        # tools/ 下 6 个诊断工程不在 WinCanvas.sln 里（WinTips 同理由），
+        # tools/ 下诊断工程不在 WinCanvas.sln 里（WinTips 同理由），
         # 不单独编译就会无声腐烂。它们各自只有 1 个 Program.cs，构建很快。
         run: |
           dotnet build tools/Wp1AHostDiag/Wp1AHostDiag.csproj -c Release --nologo
@@ -70,6 +70,7 @@ jobs:
           dotnet build tools/Wp5FormatDiag/Wp5FormatDiag.csproj -c Release --nologo
           dotnet build tools/WvLibraryDiag/WvLibraryDiag.csproj -c Release --nologo
           dotnet build tools/HotkeyInjector/HotkeyInjector.csproj -c Release --nologo
+          dotnet build tools/PrivacyMaskDiag/PrivacyMaskDiag.csproj -c Release --nologo
 
       # ---- 漏洞报告 ----
       # 现阶段是【报告】而非【硬门禁】：ImageSharp 2.1.13 仍带 3 条 High 公告

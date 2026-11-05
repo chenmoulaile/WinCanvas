@@ -36,6 +36,14 @@
                                   IsOn="{x:Bind ViewModel.AutoRestoreOnStartup, Mode=TwoWay}"
                                   AutomationProperties.Name="启动时自动恢复窗口状态与背景" />
 
+                    <!-- 隐私遮罩（隐私窗口工作包）：主窗口失焦时自动遮蔽内容，点回窗口立即恢复 -->
+                    <ToggleSwitch Header="主窗口失焦显示隐私遮罩"
+                                  IsOn="{x:Bind ViewModel.PrivacyOverlayEnabled, Mode=TwoWay}"
+                                  AutomationProperties.Name="主窗口失去焦点时自动显示隐私遮罩，重新聚焦后恢复" />
+                    <TextBlock Text="开启后，本窗口切到后台（含 Alt-Tab 预览）会显示「已进入隐私模式」遮罩，防止旁人窥视；点回本窗口立即恢复。单个窗口的失焦遮蔽请在「窗口与壁纸」页的窗口列表中逐项开启。"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.7" TextWrapping="Wrap" />
+
                     <ToggleSwitch Header="WinTips 提示（NumLock 状态）"
                                   IsOn="{x:Bind ViewModel.WinTipsEnabled, Mode=TwoWay}"
                                   AutomationProperties.Name="开启 NumLock 状态提示浮窗" />

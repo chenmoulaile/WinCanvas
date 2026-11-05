@@ -82,6 +82,16 @@ public sealed partial class MainWindow : Window
         // 窗口图标：任务栏 / alt-tab 用 WinCanvas.ico。取不到就保持系统默认图标。
         TrySetWindowIcon(hwnd);
 
+        // ===== 隐私窗口（隐私窗口工作包）：失焦遮蔽的事件装配 =====
+        // code-behind 只把 WinUI 的激活状态事件转发给 ViewModel（判定与开关逻辑在 VM 的
+        // SetMainWindowFocusState），遮罩层可见性由 ViewModel.MainWindowPrivacyActive 驱动。
+        // 注意：WinUI 3 的 Window 没有 Deactivated 事件（与 UWP CoreWindow 不同），
+        // 失焦以 Activated 事件携带的 WindowActivationState.Deactivated 判定——
+        // 这也是官方文档给出的失焦口径。失焦后 XAML 遮罩随窗口合成进入 DWM 窗口采样
+        // → 任务栏 / Alt-Tab 预览同步呈现遮罩。
+        Activated += (_, args) => ViewModel.SetMainWindowFocusState(
+            isActivated: args.WindowActivationState != Microsoft.UI.Xaml.WindowActivationState.Deactivated);
+
         // ===== 关闭语义改造：有托盘时「关闭」= 收进托盘，「退出」= 真退出 =====
         // 迁移前只有 Closed：点 X 直接结束进程，壁纸宿主与已设属性全靠「下次启动自动恢复」兜，
         // 用户想「让工具在后台继续看着这些窗口」根本做不到 —— 这正是托盘要解决的问题。

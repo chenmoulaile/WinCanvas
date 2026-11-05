@@ -408,6 +408,10 @@ public partial class MainViewModel
                 await ExecuteFocusWindowHotkeyAsync(action);
                 return;
 
+            case HotkeyAction.FocusTogglePrivacy:
+                ExecuteFocusPrivacyToggle();
+                return;
+
             default:
                 return;
         }
@@ -604,6 +608,44 @@ public partial class MainViewModel
             archive.Corner = corner;
             PersistState(archive); // 配置锁内并入 _appConfig 并经 ConfigurationService 防抖批量落盘
         }
+    }
+
+    /// <summary>
+    /// 「隐私模式切换（焦点窗口）」热键：对当前前台窗口翻转其隐私开关（UI 线程执行）。
+    /// 与其它焦点热键一致作用在 GetForegroundWindow()；窗口必须已在列表中
+    /// （隐私状态挂在列表条目与配置档案上，列表外窗口无处落盘）。
+    /// 开关本身的翻转经 <see cref="WindowItemViewModel.IsPrivacyEnabled"/> 触发
+    /// 单一应用路径（失焦遮蔽 / 聚焦恢复 / 持久化 / 监听启停全部复用）。
+    /// </summary>
+    private void ExecuteFocusPrivacyToggle()
+    {
+        IntPtr hwnd = ShellNativeMethods.GetForegroundWindow();
+
+        if (hwnd == IntPtr.Zero)
+        {
+            // 失败 + 原因 + 怎么办：切屏 / 锁屏瞬间系统确实可能没有前台窗口，重按一次即可
+            ShowInfo(InfoBarSeverity.Informational,
+                "快捷键未执行：系统当前没有返回前台窗口（可能正处在切屏或锁屏瞬间）。请再按一次；仍无效请先点击目标窗口取得焦点。");
+            return;
+        }
+
+        ShellNativeMethods.GetWindowThreadProcessId(hwnd, out uint foregroundProcessId);
+        if (foregroundProcessId == (uint)Environment.ProcessId)
+        {
+            return; // 对自身窗口不生效（主窗口遮罩由设置开关控制），设计行为不打扰用户
+        }
+
+        var item = Windows.FirstOrDefault(w => w.Hwnd == hwnd);
+        if (item is null)
+        {
+            ShowInfo(InfoBarSeverity.Warning,
+                "隐私模式未切换：当前焦点窗口不在窗口列表中（可能是刚打开、尚未刷新）。" +
+                "请先点主界面「刷新」再按热键，或在列表中选中该窗口打开隐私开关。");
+            return;
+        }
+
+        // 属性 setter 内部走 ApplyPrivacyAsync 单一路径（档案落盘 + 遮蔽迁移 + 监听启停）
+        item.IsPrivacyEnabled = !item.IsPrivacyEnabled;
     }
 
     /// <summary>

@@ -111,15 +111,40 @@
                                       SelectedItem="{x:Bind ViewModel.Selected, Mode=TwoWay}">
                                 <ListView.ItemTemplate>
                                     <DataTemplate x:DataType="vm:WindowItemViewModel">
-                                        <StackPanel Spacing="2" Padding="2">
-                                            <TextBlock Text="{x:Bind DisplayName}"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       Style="{ThemeResource BodyTextBlockStyle}" />
-                                            <TextBlock Text="{x:Bind Subtitle}"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                                       Opacity="0.7" />
-                                        </StackPanel>
+                                        <Grid ColumnSpacing="8" Padding="2">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Spacing="2" VerticalAlignment="Center">
+                                                <TextBlock Text="{x:Bind DisplayName}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Style="{ThemeResource BodyTextBlockStyle}" />
+                                                <TextBlock Text="{x:Bind Subtitle}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Opacity="0.7" />
+                                            </StackPanel>
+                                            <!-- 隐私开关（隐私窗口工作包）：开启后该窗口失焦自动遮蔽内容、聚焦恢复。
+                                                 行内紧凑形态（无文字标签），语义由 AutomationProperties 说明 -->
+                                            <StackPanel Grid.Column="1"
+                                                        Orientation="Vertical"
+                                                        VerticalAlignment="Center"
+                                                        Spacing="0">
+                                                <ToggleSwitch OnContent="" OffContent=""
+                                                              MinWidth="0"
+                                                              Margin="0,-4"
+                                                              IsOn="{x:Bind IsPrivacyEnabled, Mode=TwoWay}"
+                                                              AutomationProperties.Name="{x:Bind PrivacyToggleAutomationName, Mode=OneTime}" />
+                                                <!-- 遮蔽态指示：该窗口正被失焦遮蔽时亮眼睛图标 -->
+                                                <FontIcon Glyph="&#xE7B3;"
+                                                          FontSize="14"
+                                                          Margin="0,-6,0,0"
+                                                          HorizontalAlignment="Center"
+                                                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                                          Visibility="{x:Bind PrivacyMaskedVisibility, Mode=OneWay}" />
+                                            </StackPanel>
+                                        </Grid>
                                     </DataTemplate>
                                 </ListView.ItemTemplate>
                             </ListView>
@@ -418,5 +443,42 @@
 
             </Grid>
         </NavigationView>
+
+        <!-- ===== 隐私遮罩层（隐私窗口工作包）=====
+             主窗口失焦（Deactivated）时显示：遮挡内容防旁人窥视；重新聚焦（Activated）瞬间隐藏。
+             可见性真源是 ViewModel.MainWindowPrivacyActive（经 PrivacyOverlayVisibility），
+             Activated/Deactivated 事件由 code-behind 只做装配转发。失焦后本层随窗口合成一起
+             进入 DWM 窗口采样，任务栏悬停预览与 Alt-Tab 预览同步呈现遮罩。
+             质感：深色高不透明底（遮挡为主）+ 亚克力卡片（磨砂纹理与文案承载）。 -->
+        <Grid Grid.RowSpan="2"
+              x:Name="PrivacyOverlay"
+              Visibility="{x:Bind ViewModel.PrivacyOverlayVisibility, Mode=OneWay}"
+              Background="#E6141418"
+              AutomationProperties.Name="隐私遮罩：窗口内容已隐藏">
+            <Border HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    CornerRadius="12"
+                    Padding="44,28"
+                    Background="{ThemeResource AcrylicBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1">
+                <StackPanel Spacing="12" HorizontalAlignment="Center">
+                    <FontIcon Glyph="&#xE7B3;"
+                              FontSize="44"
+                              HorizontalAlignment="Center"
+                              Foreground="#CFFFFFFF" />
+                    <TextBlock Text="已进入隐私模式"
+                               FontSize="22"
+                               FontWeight="SemiBold"
+                               HorizontalAlignment="Center"
+                               Foreground="White" />
+                    <TextBlock Text="窗口内容已遮蔽，点击本窗口立即恢复显示。"
+                               HorizontalAlignment="Center"
+                               TextWrapping="Wrap"
+                               Foreground="#BFFFFFFF"
+                               Style="{ThemeResource CaptionTextBlockStyle}" />
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>
