@@ -225,4 +225,110 @@ public sealed class HotkeyTableTests
             Assert.Null(HotkeyTable.Validate(b, new[] { b }));
         }
     }
+
+    // ---------- 焦点窗口系列（v0.3.3）：默认绑定 / 旧配置补齐 / 步进钳制 ----------
+
+    [Theory]
+    [InlineData(HotkeyAction.FocusToggleTopmost, 0x54)]      // T
+    [InlineData(HotkeyAction.FocusToggleClickThrough, 0x50)] // P
+    [InlineData(HotkeyAction.FocusIncreaseOpacity, 0x26)]    // ↑
+    [InlineData(HotkeyAction.FocusDecreaseOpacity, 0x28)]    // ↓
+    [InlineData(HotkeyAction.FocusRestoreOpaque, 0x4F)]      // O
+    [InlineData(HotkeyAction.FocusCycleCorner, 0x55)]        // U
+    public void GetDefault_焦点窗口系列_默认Win加Alt与语义主键(HotkeyAction action, int expectedVk)
+    {
+        var binding = HotkeyTable.GetDefault(action);
+
+        // 焦点系列统一 Win+Alt 前缀：与「选中窗口」系列的 Ctrl+Alt 从组合上区分开，
+        // 且避开 Win+字母（开始菜单搜索）、Win+Shift+S（截图）等系统保留键
+        Assert.Equal(HotkeyModifiers.Win | HotkeyModifiers.Alt, binding.Modifiers);
+        Assert.Equal(expectedVk, binding.VirtualKey);
+
+        // 修复口径的核心断言：默认开启 —— 用户预期「按了就有反应」，不许默认静默
+        Assert.True(binding.Enabled);
+    }
+
+    [Fact]
+    public void Normalize_旧版本配置没有焦点动作_补默认组合且保留旧条目()
+    {
+        // 升级场景：config.json 里只有 v0.3.2 的 11 条（无 Focus* 动作）。
+        // 新动作必须按默认值补齐（否则新热键整体不可用，等于白修），
+        // 旧条目必须原样保留（用户改过的键与开关不能被升级冲掉）。
+        var oldConfig = HotkeyTable.Normalize(null)
+            .Where(b => (int)b.Action <= 10)
+            .ToList();
+
+        var result = HotkeyTable.Normalize(oldConfig);
+
+        Assert.Equal(HotkeyTable.Catalog.Length, result.Count);
+        Assert.All(result.Where(b => (int)b.Action >= 11), b =>
+        {
+            Assert.Equal(HotkeyModifiers.Win | HotkeyModifiers.Alt, b.Modifiers);
+            Assert.True(b.Enabled);
+        });
+        Assert.All(result.Where(b => (int)b.Action <= 10), b => Assert.Contains(b, oldConfig));
+    }
+
+    [Fact]
+    public void Format_焦点窗口系列组合_按CtrlAltShiftWin固定顺序显示()
+    {
+        // Format 的修饰键顺序固定 Ctrl→Alt→Shift→Win：Win+Alt 显示为「Alt+Win」，
+        // 与设置界面其余行书写一致（这里顺带钉住显示顺序，防止改键后两套写法并存）
+        var binding = new HotkeyBinding
+        {
+            Action = HotkeyAction.FocusToggleTopmost,
+            Modifiers = HotkeyModifiers.Win | HotkeyModifiers.Alt,
+            VirtualKey = 0x54,
+        };
+
+        Assert.Equal("Alt+Win+T", HotkeyTable.Format(binding));
+    }
+
+    [Fact]
+    public void Validate_接受Win加Alt组合_不被缺少Ctrl规则误杀()
+    {
+        // 焦点系列默认组合只带 Win+Alt：规则要求的是「至少 Ctrl 或 Alt 之一」，
+        // Win+Alt 满足 —— 若校验把 Win 也算进「必须」，6 条新热键改键时全部被拒
+        var candidate = new HotkeyBinding
+        {
+            Action = HotkeyAction.FocusToggleTopmost,
+            Modifiers = HotkeyModifiers.Win | HotkeyModifiers.Alt,
+            VirtualKey = 0x54,
+        };
+
+        Assert.Null(HotkeyTable.Validate(candidate, new[] { candidate }));
+    }
+
+    [Theory]
+    [InlineData(200u, true, 210u)]  // 常规步进 +10
+    [InlineData(200u, false, 190u)] // 常规步进 -10
+    [InlineData(250u, true, 255u)]  // 250+10 → 钳到上限 255
+    [InlineData(5u, false, 0u)]     // 5-10 → 钳到下限 0
+    [InlineData(255u, true, 255u)]  // 已达上限再按 → 保持 255 不回绕
+    [InlineData(0u, false, 0u)]     // 已达下限再按 → 保持 0 不回绕
+    public void NextFocusAlpha_步进10并钳制到0到255(byte current, bool increase, byte expected)
+    {
+        // 回绕是这里最危险的缺陷：byte 溢出让 255+10 变成 9，
+        // 表现为「按多了透明度突然跳回几乎全透明」
+        Assert.Equal(expected, HotkeyTable.NextFocusAlpha(current, increase));
+    }
+
+    [Fact]
+    public void FocusOpacityStep_常量为10_与README及描述文案同口径()
+    {
+        // 步进是「焦点窗口透明度 ±10」这个产品口径的唯一事实来源，
+        // 被执行路径与两处文案共用 —— 改这里必须同步改文案
+        Assert.Equal(10, HotkeyTable.FocusOpacityStep);
+    }
+
+    [Fact]
+    public void 默认表_新旧两个系列组合互不冲突()
+    {
+        // 旧系列（Ctrl+Alt+）与新系列（Win+Alt+）若发生组合重叠，
+        // 重叠的那条必有一个注册失败（同一组合只能被注册一次）
+        var defaults = HotkeyTable.Normalize(null);
+
+        Assert.Equal(17, defaults.Count);
+        Assert.Equal(defaults.Count, defaults.Select(b => (b.Modifiers, b.VirtualKey)).Distinct().Count());
+    }
 }

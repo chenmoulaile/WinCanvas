@@ -34,11 +34,25 @@ public static class HotkeyTable
         (HotkeyAction.ShowHideMainWindow, "显示 / 隐藏主界面", "配合托盘：窗口收进托盘后叫回来"),
         (HotkeyAction.ToggleWinTipsIndicator, "NumLock 提示开关", "开 / 关低级键盘钩子与浮窗提示"),
         (HotkeyAction.ToggleWallpaperAudio, "壁纸声音开关", "开 / 关壁纸发声（默认静音）"),
+        // 焦点窗口系列（v0.3.3）：作用对象是【当前焦点窗口】（GetForegroundWindow），
+        // 与上面「选中窗口」系列互补 —— 焦点在任意窗口（含非本应用窗口）时按键立即生效，
+        // 无需先回主界面选窗口。这正是「焦点窗口按快捷键没反应」这一报障的修复口径。
+        (HotkeyAction.FocusToggleTopmost, "置顶切换（焦点窗口）", "对当前焦点窗口切换置顶，无需在列表中选中"),
+        (HotkeyAction.FocusToggleClickThrough, "鼠标穿透切换（焦点窗口）", "当前焦点窗口是否忽略鼠标事件"),
+        (HotkeyAction.FocusIncreaseOpacity, "提高透明度（焦点窗口）", "焦点窗口不透明度 +10（上限 255）"),
+        (HotkeyAction.FocusDecreaseOpacity, "降低透明度（焦点窗口）", "焦点窗口不透明度 -10（下限 0）"),
+        (HotkeyAction.FocusRestoreOpaque, "恢复不透明（焦点窗口）", "焦点窗口恢复完全不透明（alpha = 255）"),
+        (HotkeyAction.FocusCycleCorner, "圆角循环（焦点窗口）", "焦点窗口：无 → 大圆角 → 小圆角 → 无"),
     };
 
     /// <summary>
     /// 默认快捷键。Ctrl+Alt+ 前缀 + 一个语义相关的主键。
     /// 方向键用 VK_UP(0x26)/VK_DOWN(0x28)，透明度增减与「上下」直觉对齐。
+    ///
+    /// 焦点窗口系列用 Win+Alt+ 前缀：它就是要「在任何软件里」按的键，与作用于
+    /// 「列表选中窗口」的 Ctrl+Alt+ 系列从组合上就区分开；同时避开 Win10/11 的
+    /// Win+字母（开始菜单搜索）、Win+Shift+S（截图）、Win+Alt+B（HDR 切换）等系统保留键。
+    /// 默认组合是建议不是保证：真被占用时注册失败的那条会单独提示换键，不影响其余。
     /// </summary>
     private static readonly Dictionary<HotkeyAction, (HotkeyModifiers Mods, int Vk)> Defaults = new()
     {
@@ -53,7 +67,36 @@ public static class HotkeyTable
         [HotkeyAction.ShowHideMainWindow] = (HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x43),       // C
         [HotkeyAction.ToggleWinTipsIndicator] = (HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x4E),   // N
         [HotkeyAction.ToggleWallpaperAudio] = (HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x4D),     // M（Mute/Music）
+        // 焦点窗口系列：Win+Alt+ 前缀（0x54=T、0x50=P、0x4F=O、0x55=U）
+        [HotkeyAction.FocusToggleTopmost] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x54),           // T（Topmost）
+        [HotkeyAction.FocusToggleClickThrough] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x50),      // P（Penetrate）
+        [HotkeyAction.FocusIncreaseOpacity] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x26),         // ↑
+        [HotkeyAction.FocusDecreaseOpacity] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x28),         // ↓
+        [HotkeyAction.FocusRestoreOpaque] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x4F),           // O（Opaque）
+        [HotkeyAction.FocusCycleCorner] = (HotkeyModifiers.Win | HotkeyModifiers.Alt, 0x55),             // U（Corner 循环）
     };
+
+    /// <summary>
+    /// 焦点窗口系列透明度的单次步进（v0.3.3）。
+    /// 与「选中窗口」系列的 ±32 不同：焦点热键要在任意软件里连续按着微调，
+    /// 步进取 10 更贴合「多按几次慢慢调」的使用方式（README 与描述文案同口径）。
+    /// </summary>
+    public const int FocusOpacityStep = 10;
+
+    /// <summary>
+    /// 焦点窗口透明度的目标值钳制：把「当前 alpha ± <see cref="FocusOpacityStep"/>」
+    /// 的结果限制回 byte 的 0~255 区间。纯函数，供热键执行路径与测试共用，
+    /// 避免钳制逻辑散落在 ViewModel 里无法单测。
+    /// </summary>
+    /// <param name="current">当前不透明度（0 全透明 ~ 255 不透明）。</param>
+    /// <param name="increase">true = 提高（更不透明），false = 降低（更透明）。</param>
+    /// <returns>钳制后的目标 alpha。</returns>
+    public static byte NextFocusAlpha(byte current, bool increase)
+    {
+        return increase
+            ? (byte)Math.Min(255, current + FocusOpacityStep)
+            : (byte)Math.Max(0, current - FocusOpacityStep);
+    }
 
     /// <summary>取某动作的默认绑定。</summary>
     public static HotkeyBinding GetDefault(HotkeyAction action)

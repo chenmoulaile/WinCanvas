@@ -249,4 +249,32 @@ public partial class WindowItemViewModel : ObservableObject
             _reportError(ProcessElevation.DescribeFailure(ex, $"设置窗口「{DisplayName}」圆角"));
         }
     }
+
+    /// <summary>
+    /// 把窗口属性的新值由外部路径（v0.3.3 焦点窗口热键）直接同步进本条目。
+    ///
+    /// 为什么不直接调上面的 Set*Async：那组方法各自有「目标值 == 已应用值就短路」的
+    /// 防抖设计，而热键路径已经【实际应用过】Win32 调用，这里只需让条目内部的三份状态
+    /// 对齐 —— 可绑定属性（界面详情面板 / 选中项镜像）、持久化档案（State）、
+    /// 「已应用基准」（_applied*）。少了最后一份，之后用户在界面上把滑块拖回
+    /// 热键设置前的旧值时会被短路吞掉，表现为「滑块动了窗口没变」。
+    /// 落盘仍由调用方统一执行（MainViewModel.PersistState），本方法不重复写盘。
+    /// </summary>
+    internal void SyncApplied(bool topmost, bool clickThrough, byte alpha, CornerPreference corner)
+    {
+        _appliedTopmost = topmost;
+        _appliedClickThrough = clickThrough;
+        _appliedAlpha = alpha;
+        _appliedCorner = corner;
+
+        IsTopmost = topmost;
+        ClickThrough = clickThrough;
+        Alpha = alpha;
+        Corner = corner;
+
+        State.IsTopmost = topmost;
+        State.ClickThrough = clickThrough;
+        State.Alpha = alpha;
+        State.Corner = corner;
+    }
 }

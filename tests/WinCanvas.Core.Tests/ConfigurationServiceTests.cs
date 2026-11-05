@@ -229,4 +229,50 @@ public sealed class ConfigurationServiceTests : IDisposable
         Assert.Throws<ArgumentOutOfRangeException>(
             () => new ConfigurationService(_configPath, TimeSpan.FromMilliseconds(-1)));
     }
+
+    [Fact]
+    public async Task Hotkeys_含焦点窗口系列动作_落盘往返不丢失()
+    {
+        // v0.3.3 新增的 Focus* 动作（枚举值 11~16）走同一份 config.json：
+        // 往返必须原样保留动作值、修饰键、主键与开关 —— 枚举以数字序列化，
+        // 「只追加不重排」约束下旧配置可解析、新动作可持久化，这里是钉住该行为的回归点。
+        var config = new AppConfig
+        {
+            Hotkeys =
+            {
+                new HotkeyBinding
+                {
+                    Action = HotkeyAction.FocusToggleTopmost,
+                    Modifiers = HotkeyModifiers.Win | HotkeyModifiers.Alt,
+                    VirtualKey = 0x54,
+                    Enabled = true,
+                },
+                new HotkeyBinding
+                {
+                    Action = HotkeyAction.FocusRestoreOpaque,
+                    Modifiers = HotkeyModifiers.Win | HotkeyModifiers.Alt,
+                    VirtualKey = 0x4F,
+                    Enabled = false, // 用户手动关掉的条目也不许被往返悄悄打开
+                },
+            },
+        };
+
+        using (var service = CreateService())
+        {
+            service.Update(config); // Update 内部防抖落盘，短防抖（120ms）内完成
+            await Task.Delay(300);
+        }
+
+        using var reload = CreateService();
+        var loaded = await reload.LoadAsync();
+
+        var topmost = Assert.Single(loaded.Hotkeys, b => b.Action == HotkeyAction.FocusToggleTopmost);
+        Assert.Equal(HotkeyModifiers.Win | HotkeyModifiers.Alt, topmost.Modifiers);
+        Assert.Equal(0x54, topmost.VirtualKey);
+        Assert.True(topmost.Enabled);
+
+        var opaque = Assert.Single(loaded.Hotkeys, b => b.Action == HotkeyAction.FocusRestoreOpaque);
+        Assert.Equal(0x4F, opaque.VirtualKey);
+        Assert.False(opaque.Enabled);
+    }
 }

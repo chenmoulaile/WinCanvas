@@ -120,9 +120,10 @@ internal sealed class GlobalHotkeyService : IDisposable
 
                 // 1409 = ERROR_HOTKEY_ALREADY_REGISTERED：被别的程序占了。
                 // 这是最常见失败，必须给出「去改键」的可执行指引而不是甩个错误码。
+                // 文案按「失败 + 原因 + 怎么办」三要素组织（换键或关掉该条都算出路）。
                 string reason = err == 1409
-                    ? $"{HotkeyTable.Format(binding)} 已被系统或其它程序占用（错误 1409），请在设置里换一个组合。"
-                    : $"注册 {HotkeyTable.Format(binding)} 失败（Win32 错误 {err}）。";
+                    ? $"{HotkeyTable.Format(binding)} 已被系统或其它程序占用（错误 1409），请到设置里换一个组合，或在快捷键列表关闭该条。"
+                    : $"注册 {HotkeyTable.Format(binding)} 失败（Win32 错误 {err}）。请到设置里换一个组合；若反复出现请把日志反馈给开发者。";
 
                 usedCombinations.Remove((mods, vk));
                 list.Add(binding.Action, reason);

@@ -3,7 +3,9 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.UI.Xaml.Controls;
+using WinCanvas.App.Native;
 using WinCanvas.App.Services;
+using WinCanvas.Core.Interfaces;
 using WinCanvas.Core.Models;
 
 namespace WinCanvas.App.ViewModels;
@@ -394,9 +396,263 @@ public partial class MainViewModel
                 await ClearWallpaperAsync();
                 return;
 
+            // 焦点窗口系列（v0.3.3）：作用于 GetForegroundWindow()，与列表选中无关 ——
+            // 这正是「焦点窗口按下快捷键没反应」报障的修复口径：任何窗口获得焦点（包括
+            // 非本应用窗口）时按键立即生效，无需切回主窗口选中它。
+            case HotkeyAction.FocusToggleTopmost:
+            case HotkeyAction.FocusToggleClickThrough:
+            case HotkeyAction.FocusIncreaseOpacity:
+            case HotkeyAction.FocusDecreaseOpacity:
+            case HotkeyAction.FocusRestoreOpaque:
+            case HotkeyAction.FocusCycleCorner:
+                await ExecuteFocusWindowHotkeyAsync(action);
+                return;
+
             default:
                 return;
         }
+    }
+
+    // ---------- 焦点窗口热键（v0.3.3） ----------
+
+    /// <summary>
+    /// 不在主界面列表中的焦点窗口的会话内状态基准（v0.3.3）。
+    ///
+    /// 为什么需要：列表只包含上次刷新时可见、非 cloaked、有标题的窗口，用户运行中
+    /// 新开的窗口按热键时列表里还没有它。置顶可以每次读真实状态（<c>ToggleTopmostAsync</c>
+    /// 自带读-翻转），但穿透/透明度/圆角没有「读」的接口，只能以「上次应用过的值」为基准 ——
+    /// 对无档案窗口，这个基准就记在这里，让连续按键的 ±10 / 开关语义在会话内成立。
+    /// </summary>
+    private sealed class FocusWindowRuntime
+    {
+        /// <summary>上次应用的置顶状态。</summary>
+        public bool IsTopmost;
+
+        /// <summary>上次应用的穿透状态。</summary>
+        public bool ClickThrough;
+
+        /// <summary>上次应用的不透明度（0~255）。</summary>
+        public byte Alpha = 255;
+
+        /// <summary>上次应用的圆角偏好。</summary>
+        public CornerPreference Corner = CornerPreference.Default;
+    }
+
+    /// <summary>
+    /// hwnd → 焦点窗口会话基准。
+    /// 并发纪律：【只在 UI 线程读写】—— 热键事件经 GlobalHotkeyService.Triggered →
+    /// DispatcherQueue.TryEnqueue 全部封送到 UI 线程执行（见 AttachShell 的订阅），
+    /// 不存在并发访问者，故不加锁；不要从后台线程触碰本字典。
+    /// 窗口销毁后的残留条目以句柄值作键，句柄被系统复用时会以新窗口的状态覆盖，
+    /// 最坏影响是一次状态基准偏差，不涉及内存或句柄安全。
+    /// </summary>
+    private readonly Dictionary<IntPtr, FocusWindowRuntime> _focusWindowStates = new();
+
+    /// <summary>
+    /// 执行一个【焦点窗口】系列热键：目标 = 当前前台窗口（GetForegroundWindow），
+    /// 复用 <see cref="IWindowControlService"/> 既有 Win32 方法；能关联到列表条目或
+    /// 配置档案时同步其状态并经 <see cref="PersistState"/> 走配置防抖落盘。
+    /// 在 UI 线程执行（由 <see cref="ExecuteHotkeyAsync"/> 封送）。
+    /// </summary>
+    /// <param name="action">焦点窗口系列动作。</param>
+    private async Task ExecuteFocusWindowHotkeyAsync(HotkeyAction action)
+    {
+        IntPtr hwnd = ShellNativeMethods.GetForegroundWindow();
+
+        if (hwnd == IntPtr.Zero)
+        {
+            // 失败 + 原因 + 怎么办：切屏 / 锁屏瞬间系统确实可能没有前台窗口，重按一次即可
+            ShowInfo(InfoBarSeverity.Informational,
+                "快捷键未执行：系统当前没有返回前台窗口（可能正处在切屏或锁屏瞬间）。请再按一次；仍无效请先点击目标窗口取得焦点。");
+            return;
+        }
+
+        // 排除本应用自身窗口（主窗口与壁纸宿主同在本进程，进程 Id 即可整组排除）：
+        // 1) 把置顶/穿透打到自己身上会造成「主界面突然点不动 / 突然置顶」这类自伤；
+        // 2) 主窗口聚焦时按热键，与应用内的快捷键录入等按键处理互相干扰。
+        // 命中时静默返回：这是设计行为（对自身窗口不生效），不是故障，不打扰用户。
+        ShellNativeMethods.GetWindowThreadProcessId(hwnd, out uint foregroundProcessId);
+        if (foregroundProcessId == (uint)Environment.ProcessId)
+        {
+            return;
+        }
+
+        // —— 状态基准与写回目标 ——
+        // 列表条目（item）：界面属性、档案（item.State）齐全，写回后界面同步显示；
+        // 会话缓存（runtime）：仅列表外窗口需要；档案（archive）：HwndHash 匹配的配置档案，
+        // 存在则随动作更新并防抖落盘，不存在则不凭空建档（避免空 Key 的孤儿档案进 config.json）。
+        var item = Windows.FirstOrDefault(w => w.Hwnd == hwnd);
+        WindowState? archive;
+        FocusWindowRuntime? runtime = null;
+
+        bool topmost;
+        bool clickThrough;
+        byte alpha;
+        CornerPreference corner;
+
+        if (item is not null)
+        {
+            archive = item.State;
+            topmost = item.IsTopmost;
+            clickThrough = item.ClickThrough;
+            alpha = item.Alpha;
+            corner = item.Corner;
+        }
+        else
+        {
+            archive = _appConfig.Windows.FirstOrDefault(w => w.HwndHash == hwnd.ToInt64());
+
+            // 并发纪律：_focusWindowStates 仅 UI 线程读写（见字段注释），本方法在 UI 线程
+            if (!_focusWindowStates.TryGetValue(hwnd, out runtime))
+            {
+                runtime = new FocusWindowRuntime();
+
+                // 首次操作该窗口：档案存在时以档案为初始基准，否则档案里已存的
+                // 置顶/透明度会被会话默认值当作「上次应用的值」而覆盖
+                if (archive is not null)
+                {
+                    runtime.IsTopmost = archive.IsTopmost;
+                    runtime.ClickThrough = archive.ClickThrough;
+                    runtime.Alpha = archive.Alpha;
+                    runtime.Corner = archive.Corner;
+                }
+
+                _focusWindowStates[hwnd] = runtime;
+            }
+
+            topmost = runtime.IsTopmost;
+            clickThrough = runtime.ClickThrough;
+            alpha = runtime.Alpha;
+            corner = runtime.Corner;
+        }
+
+        try
+        {
+            switch (action)
+            {
+                case HotkeyAction.FocusToggleTopmost:
+                {
+                    // ToggleTopmostAsync 自带「读 WS_EX_TOPMOST 实际状态 → 翻转」语义并返回
+                    // 切换后的真实状态：置顶以【真实状态】为准，档案过时也不会把置顶翻错
+                    topmost = await _services.WindowControl.ToggleTopmostAsync(hwnd);
+                    break;
+                }
+
+                case HotkeyAction.FocusToggleClickThrough:
+                {
+                    // IWindowControlService 没有「读穿透状态」的接口，切换基准取档案/缓存值 ——
+                    // 与主界面 ToggleSwitch 的翻转语义同构（SetClickThroughAsync 同样以条目状态为基准）
+                    clickThrough = !clickThrough;
+                    await _services.WindowControl.EnableClickThroughAsync(hwnd, clickThrough);
+                    break;
+                }
+
+                case HotkeyAction.FocusIncreaseOpacity:
+                case HotkeyAction.FocusDecreaseOpacity:
+                {
+                    alpha = HotkeyTable.NextFocusAlpha(alpha, action == HotkeyAction.FocusIncreaseOpacity);
+                    await _services.WindowControl.SetTransparencyAsync(hwnd, alpha);
+                    break;
+                }
+
+                case HotkeyAction.FocusRestoreOpaque:
+                {
+                    alpha = 255;
+                    await _services.WindowControl.SetTransparencyAsync(hwnd, alpha);
+                    break;
+                }
+
+                case HotkeyAction.FocusCycleCorner:
+                {
+                    corner = NextCornerInCycle(corner);
+                    await _services.WindowControl.SetCornerPreferenceAsync(hwnd, corner);
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // 失败 + 原因 + 怎么办：ProcessElevation.DescribeFailure 对 Win32 错误 5（UIPI）
+            // 会自动附上「以管理员身份重启」的引导，其余错误带原始消息
+            ShowInfo(InfoBarSeverity.Error, ProcessElevation.DescribeFailure(
+                ex, $"对前台窗口{DescribeFocusTarget(hwnd, item?.DisplayName)}执行「{HotkeyTable.LabelOf(action)}」"));
+            return;
+        }
+
+        // —— 成功：把新状态写回三处（界面条目 / 会话缓存 / 配置档案）——
+        if (item is not null)
+        {
+            // SyncApplied 同时对齐可绑定属性（详情面板 / 选中项镜像自动跟着刷新）、
+            // 档案（item.State）与条目内部的「已应用基准」（_applied*）——
+            // 少最后一份，之后界面上把滑块拖回旧值会被 Set*Async 的短路防抖吞掉
+            item.SyncApplied(topmost, clickThrough, alpha, corner);
+        }
+
+        if (runtime is not null)
+        {
+            runtime.IsTopmost = topmost;
+            runtime.ClickThrough = clickThrough;
+            runtime.Alpha = alpha;
+            runtime.Corner = corner;
+        }
+
+        if (archive is not null)
+        {
+            archive.IsTopmost = topmost;
+            archive.ClickThrough = clickThrough;
+            archive.Alpha = alpha;
+            archive.Corner = corner;
+            PersistState(archive); // 配置锁内并入 _appConfig 并经 ConfigurationService 防抖批量落盘
+        }
+    }
+
+    /// <summary>
+    /// 圆角档位循环的下一档：无 → 大 → 小 → 无。
+    /// 与主界面 <see cref="CycleSelectedCorner"/>（CornerOptions 顺序）完全同序，保证
+    /// 「同一个窗口无论从热键还是界面循环，档位走向一致」——包括对档案默认值
+    /// Default（= 跟随系统，不在循环表内）的处理：界面路径把它当作第 0 档
+    /// （currentIndex 保持初值 0），下一档取「大圆角」，这里保持同一行为。
+    /// </summary>
+    private static CornerPreference NextCornerInCycle(CornerPreference current)
+    {
+        CornerPreference[] cycle =
+        {
+            CornerPreference.DoNotRound,
+            CornerPreference.Round,
+            CornerPreference.RoundSmall,
+        };
+
+        int index = Array.IndexOf(cycle, current);
+        if (index < 0)
+        {
+            index = 0; // Default / 未知值：与 CycleSelectedCorner 的初值口径一致，下一档取「大」
+        }
+
+        return cycle[(index + 1) % cycle.Length];
+    }
+
+    /// <summary>
+    /// 失败提示里对目标窗口的人读描述：优先真实窗口标题，其次列表条目名，
+    /// 都取不到就退回句柄值 —— 让用户能对上是哪个窗口，而不是面对一串裸错误。
+    /// </summary>
+    private static string DescribeFocusTarget(IntPtr hwnd, string? fallbackTitle)
+    {
+        try
+        {
+            var title = new System.Text.StringBuilder(64);
+            ShellNativeMethods.GetWindowTextW(hwnd, title, title.Capacity);
+
+            if (!string.IsNullOrWhiteSpace(title.ToString()))
+            {
+                return $"「{title}」";
+            }
+        }
+        catch (Exception ex)
+        {
+            App.LogFatal(ex, "读取前台窗口标题失败（不影响热键执行）");
+        }
+
+        return string.IsNullOrWhiteSpace(fallbackTitle) ? $"0x{hwnd.ToInt64():X}" : $"「{fallbackTitle}」";
     }
 
     /// <summary>热键动作依赖「已选中窗口」而当前没选中时的提示。</summary>

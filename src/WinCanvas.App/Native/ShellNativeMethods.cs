@@ -206,6 +206,39 @@ internal static class ShellNativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
 
+    /// <summary>
+    /// 取当前【前台窗口】（用户正在交互、拥有键盘焦点的顶层窗口）的句柄（v0.3.3 焦点窗口热键专用）。
+    /// </summary>
+    /// <returns>
+    /// 前台窗口句柄；【失败语义】系统当前没有前台窗口（如刚切屏、锁屏瞬间）返回
+    /// IntPtr.Zero —— 调用方必须判零并以「没有焦点窗口」提示收场，不得把 0 当合法句柄
+    /// 传给后续 Win32 调用（0 号句柄会被部分 API 解释成特殊值，后果不可控）。
+    /// </returns>
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+
+    /// <summary>
+    /// 查询窗口所属的线程 Id 与进程 Id（v0.3.3 焦点窗口热键专用）。
+    /// </summary>
+    /// <param name="hWnd">目标窗口句柄。</param>
+    /// <param name="lpdwProcessId">输出参数：接收创建该窗口的进程 Id；句柄无效时为 0。</param>
+    /// <returns>创建该窗口的线程 Id；【失败语义】句柄无效时返回 0 且 lpdwProcessId 为 0
+    /// —— 本程序用它做「前台窗口是否属于本进程」的判定（与 Environment.ProcessId 比较），
+    /// 0 不等于任何真实进程 Id，无效句柄自然落入「非本进程窗口」分支，不会误排除。</returns>
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    /// <summary>
+    /// 把窗口标题复制到调用方缓冲区（v0.3.3 焦点窗口热键专用，用于失败提示里指明目标窗口）。
+    /// </summary>
+    /// <param name="hWnd">目标窗口句柄。</param>
+    /// <param name="lpString">接收标题的 Unicode 缓冲区（建议调用方先填 '\0'，失败时内容保持原样）。</param>
+    /// <param name="nMaxCount">缓冲区可容纳的最大字符数（含结尾 '\0'），标题会被截断到该长度。</param>
+    /// <returns>实际复制的字符数（不含 '\0'）；【失败语义】句柄无效或无标题返回 0
+    /// —— 调用方按「取不到标题」处理，用句柄值代替展示，不得据此判定窗口不存在。</returns>
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowTextW(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr GetModuleHandleW(string? lpModuleName);
 

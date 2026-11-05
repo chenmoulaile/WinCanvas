@@ -46,6 +46,29 @@ public enum HotkeyAction
     /// 追加在枚举末尾：值即持久化标识，插入或重排会让旧配置的绑定错位。
     /// </summary>
     ToggleWallpaperAudio = 10,
+
+    // ---- 焦点窗口系列（v0.3.3 新增，修复「焦点窗口按快捷键无反应」）----
+    // 与上面 0~10 的根本差别在【作用对象】：0~10 作用于主界面列表中「已选中的窗口」，
+    // 本组作用于 GetForegroundWindow()（当前焦点窗口），因此任何窗口获得焦点时按键都生效。
+    // 依旧只能追加：枚举值是 config.json 里的持久化标识，插入或重排会让旧配置错位。
+
+    /// <summary>切换当前焦点窗口（前台窗口）的置顶状态。</summary>
+    FocusToggleTopmost = 11,
+
+    /// <summary>切换当前焦点窗口的鼠标穿透。</summary>
+    FocusToggleClickThrough = 12,
+
+    /// <summary>当前焦点窗口不透明度 +10（上限 255）。</summary>
+    FocusIncreaseOpacity = 13,
+
+    /// <summary>当前焦点窗口不透明度 -10（下限 0）。</summary>
+    FocusDecreaseOpacity = 14,
+
+    /// <summary>当前焦点窗口恢复完全不透明（alpha = 255）。</summary>
+    FocusRestoreOpaque = 15,
+
+    /// <summary>循环当前焦点窗口的圆角档位（无 → 大 → 小 → 无）。</summary>
+    FocusCycleCorner = 16,
 }
 
 /// <summary>
